@@ -1,0 +1,24 @@
+.{
+    .name = "zig-vulkan-learn",
+    .version = "0.0.0",
+    .minimum_zig_version = "0.12.0",
+    .dependencies = .{
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/refs/heads/master.tar.gz",
+            .hash = "12209bebd04e89e83fc1f2a6d0791230fe15e3946d01267e21e62e21723dc651358d",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/heads/main.tar.gz",
+            .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        },
+        .mach_glfw = .{
+            .url = "https://github.com/hexops/mach-glfw/archive/refs/heads/main.tar.gz",
+            .hash = "1220a72c54b4a3674a1e5a907ac6ea33d1868681f187f5a07f3cfb562ff7cf2c63e0",
+        }
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
