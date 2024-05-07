@@ -6,7 +6,6 @@ const print = std.debug.print;
 
 const required_device_extensions = [_][*:0]const u8{
     "VK_KHR_swapchain",
-    "VK_KHR_portability_subset",
 };
 const required_instance_extensions = [_][*:0]const u8{
     "VK_KHR_surface",
@@ -23,34 +22,38 @@ const extensions_cap = 256;
 const pdevices_cap = 4;
 const validation_layers_cap = 16;
 const propss_cap = 4;
-const swapchain_images_cap = 4;
+const swapchain_cap = 4;
 
 fn debugCallback(
     message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, 
-    message_type: vk.DebugUtilsMessageTypeFlagsEXT, 
+    _: vk.DebugUtilsMessageTypeFlagsEXT, 
     p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, 
     _: ?*anyopaque,
 ) callconv(.C) vk.Bool32 {
     const data = p_callback_data.?;
 
+    // check ansi standard
+    var color_code: u8 = undefined;
+    if (message_severity.verbose_bit_ext) {
+        color_code = '0';
+    } else if (message_severity.info_bit_ext) {
+        color_code = '2';
+    } else if (message_severity.warning_bit_ext) {
+        color_code = '3';
+    } else {
+        color_code = '1';
+    }
+
     print(
-        \\validation layer:
-        \\  message_severity: {} 
-        \\  message_type: {}
-        \\  .flags = {},
-        \\  .p_message_id_name = {s},
-        \\  .p_message =
-        \\      {s},
-        \\
-        , 
+        "\x1b[9{c};1;4m{s}\x1b[0m\x1b[9{c}m\n{s}\n\x1b[0m\n",
         .{
-            message_severity,
-            message_type,
-            data.flags,
+            color_code,
             data.p_message_id_name.?,
+            color_code,
             data.p_message.?,
         },
     );
+    
 
     return vk.FALSE;
 }
@@ -120,7 +123,22 @@ pub fn main() !void {
         }
         return error.ValidationLayerNotFound;
     }
-        
+
+    const debug_create_info = vk.DebugUtilsMessengerCreateInfoEXT{
+        .message_severity = .{ 
+            .verbose_bit_ext = true,
+            .info_bit_ext = true, 
+            .warning_bit_ext = true,
+            .error_bit_ext = true,
+        },
+        .message_type = .{ 
+            .general_bit_ext = true, 
+            .validation_bit_ext = true, 
+            .performance_bit_ext = true,
+            .device_address_binding_bit_ext = true, 
+        },
+        .pfn_user_callback = &debugCallback,
+    };
     const instance = try vkb.createInstance(
         &.{
             .p_application_info = &.{
@@ -134,6 +152,7 @@ pub fn main() !void {
             .pp_enabled_layer_names = &required_validation_layers,
             .enabled_extension_count = required_instance_extensions.len,
             .pp_enabled_extension_names = &required_instance_extensions,
+            .p_next = &debug_create_info,
         }, 
         null,
     );
@@ -141,21 +160,10 @@ pub fn main() !void {
     const vki = try InstanceDispatch.load(instance, vkb.dispatch.vkGetInstanceProcAddr);
     defer vki.destroyInstance(instance, null);
 
+
     const debug_messenger = try vki.createDebugUtilsMessengerEXT(
         instance,
-        &.{
-            .message_severity = .{ 
-                .verbose_bit_ext = true, 
-                .warning_bit_ext = true, 
-                .error_bit_ext = true,
-            },
-            .message_type = .{ 
-                .general_bit_ext = true, 
-                .validation_bit_ext = true, 
-                .performance_bit_ext = true, 
-            },
-            .pfn_user_callback = &debugCallback,
-        }, 
+        &debug_create_info, 
         null
     );
     defer vki.destroyDebugUtilsMessengerEXT(instance, debug_messenger, null);
@@ -287,15 +295,15 @@ pub fn main() !void {
     const vkd = try DeviceDispatch.load(device, vki.dispatch.vkGetDeviceProcAddr);
     defer vkd.destroyDevice(device, null);
 
-    const surface_capabilities = try vki.getPhysicalDeviceSurfaceCapabilitiesKHR(pdevice, surface);
+    var surface_capabilities = try vki.getPhysicalDeviceSurfaceCapabilitiesKHR(pdevice, surface);
     var swapchain_images_len: u32 = surface_capabilities.min_image_count + 1;
     if (surface_capabilities.max_image_count != 0 and swapchain_images_len > surface_capabilities.max_image_count) {
         swapchain_images_len = surface_capabilities.max_image_count;
     }
     
-    setExtent(&extent, surface_capabilities);
+    setExtent(&extent, &window, surface_capabilities);
 
-    const swapchain = try vkd.createSwapchainKHR(
+    var swapchain = try vkd.createSwapchainKHR(
         device,
         &.{
             .surface = surface,
@@ -319,7 +327,7 @@ pub fn main() !void {
     defer vkd.destroySwapchainKHR(device, swapchain, null);
 
     _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, null);
-    var swapchain_images: [swapchain_images_cap]vk.Image = undefined;
+    var swapchain_images: [swapchain_cap]vk.Image = undefined;
     _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, &swapchain_images);
     
     const color_attachment = vk.AttachmentDescription {
@@ -532,7 +540,7 @@ pub fn main() !void {
     );
     defer vkd.destroyCommandPool(device, command_pool, null);
 
-    var command_buffers: [swapchain_images_cap]vk.CommandBuffer = undefined;
+    var command_buffers: [swapchain_cap]vk.CommandBuffer = undefined;
     _ = try vkd.allocateCommandBuffers(
         device,
         @ptrCast(&vk.CommandBufferAllocateInfo{
@@ -546,12 +554,12 @@ pub fn main() !void {
     const graphics_queue = vkd.getDeviceQueue(device, graphics_family, 0);
     const present_queue = vkd.getDeviceQueue(device, present_family, 0);
 
-    var image_acquired_array: [swapchain_images_cap]vk.Semaphore = undefined;
-    var image_rendered_array: [swapchain_images_cap]vk.Semaphore = undefined;
-    var frame_ready_array: [swapchain_images_cap]vk.Fence = undefined;
+    var image_acquired_array: [swapchain_cap]vk.Semaphore = undefined;
+    var image_rendered_array: [swapchain_cap]vk.Semaphore = undefined;
+    var frame_ready_array: [swapchain_cap]vk.Fence = undefined;
 
-    var swapchain_image_views: [swapchain_images_cap]vk.ImageView = undefined;
-    var swapchain_framebuffers: [swapchain_images_cap]vk.Framebuffer = undefined;
+    var swapchain_image_views: [swapchain_cap]vk.ImageView = undefined;
+    var swapchain_framebuffers: [swapchain_cap]vk.Framebuffer = undefined;
 
     for (0..swapchain_images_len) |i| {
         swapchain_image_views[i] = try vkd.createImageView(
@@ -641,17 +649,6 @@ pub fn main() !void {
         const command_buffer = command_buffers[swapchain_image_index];
         const swapchain_framebuffer = swapchain_framebuffers[swapchain_image_index];
 
-        const result = try vkd.acquireNextImageKHR(
-            device,
-            swapchain,
-            std.math.maxInt(u64),
-            image_acquired,
-            .null_handle
-        );
-        if (result.image_index != swapchain_image_index) {
-            return error.AcquireNextImageMismatch;
-        }
-
         _ = try vkd.waitForFences(
             device, 
             1, 
@@ -659,6 +656,17 @@ pub fn main() !void {
             vk.TRUE,
             std.math.maxInt(u64)
         );
+
+        const result_image_index = (try vkd.acquireNextImageKHR(
+            device,
+            swapchain,
+            std.math.maxInt(u64),
+            image_acquired,
+            .null_handle
+        )).image_index;
+        if (result_image_index != swapchain_image_index) {
+            return error.AcquireNextImageMismatch;
+        }
         
         _ = try vkd.resetFences(
             device, 
@@ -765,7 +773,7 @@ pub fn main() !void {
             frame_ready,
         );
 
-        _ = try vkd.queuePresentKHR(
+        const result = try vkd.queuePresentKHR(
             present_queue,
             &.{
                 .swapchain_count = 1,
@@ -775,10 +783,101 @@ pub fn main() !void {
                 .p_wait_semaphores = @ptrCast(&image_rendered),
             },
         );
+        switch (result) {
+            .error_out_of_date_khr, .suboptimal_khr => {
+                _ = try vkd.deviceWaitIdle(device);
 
-        swapchain_image_index += 1;
-        if (swapchain_image_index == swapchain_images_len) {
+                while (true) {
+                    surface_capabilities = try vki.getPhysicalDeviceSurfaceCapabilitiesKHR(pdevice, surface);
+                    setExtent(&extent, &window, surface_capabilities);
+
+                    if (extent.width != 0 and extent.height != 0) {
+                        break;
+                    }
+                    glfw.waitEvents();
+                }
+
+                const old_swapchain = swapchain;
+                swapchain = try vkd.createSwapchainKHR(
+                    device,
+                    &.{
+                        .surface = surface,
+                        .min_image_count = swapchain_images_len,
+                        .image_format = surface_format.format,
+                        .image_color_space = surface_format.color_space,
+                        .image_extent = extent,
+                        .image_array_layers = 1,
+                        .image_usage = .{ .color_attachment_bit = true },
+                        .image_sharing_mode = vk.SharingMode.concurrent,
+                        .queue_family_index_count = 2,
+                        .p_queue_family_indices = &[_]u32 {graphics_family, present_family},
+                        .composite_alpha = .{ .opaque_bit_khr = true, },
+                        .present_mode = present_mode,
+                        .clipped = vk.TRUE,
+                        .pre_transform = surface_capabilities.current_transform,
+                        .old_swapchain = old_swapchain,
+                    }, 
+                    null,
+                );
+                vkd.destroySwapchainKHR(device, old_swapchain, null);
+                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, null);
+                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, &swapchain_images);
+
+                for (0..swapchain_images_len) |i| {
+                    vkd.destroyFramebuffer(device, swapchain_framebuffers[i], null);
+                    vkd.destroyImageView(device, swapchain_image_views[i], null);
+
+                    swapchain_image_views[i] = try vkd.createImageView(
+                        device,
+                        &.{
+                            .image = swapchain_images[i],
+                            .components = .{
+                                .r = .identity,
+                                .g = .identity,
+                                .b = .identity,
+                                .a = .identity,
+                            },
+                            .subresource_range = .{
+                                .aspect_mask = .{ .color_bit = true, },
+                                .base_mip_level = 0,
+                                .level_count = 1,
+                                .base_array_layer = 0,
+                                .layer_count = 1,
+                            },
+                            .format = surface_format.format,
+                            .view_type = .@"2d",
+                        }, 
+                        null,
+                    );
+
+                    const attachments = [_]vk.ImageView{
+                        swapchain_image_views[i],
+                    };
+
+                    swapchain_framebuffers[i] = try vkd.createFramebuffer(
+                        device,
+                        &.{
+                            .render_pass = render_pass,
+                            .attachment_count = attachments.len,
+                            .p_attachments = &attachments,
+                            .width = extent.width,
+                            .height = extent.height,
+                            .layers = 1,
+                        }, 
+                        null,
+                    );
+                }
+                swapchain_image_index = 0;
+                continue;
+            },
+            .success => {},
+            else => return error.AcquireNextImageFailed,
+        }
+
+        if (swapchain_image_index == swapchain_images_len - 1) {
             swapchain_image_index = 0;
+        } else {
+            swapchain_image_index += 1;
         }
 
         glfw.pollEvents();
@@ -787,10 +886,17 @@ pub fn main() !void {
     _ = try vkd.deviceWaitIdle(device);
 }
 
-fn setExtent(extent: *vk.Extent2D, capabilities: vk.SurfaceCapabilitiesKHR) void {
+fn setExtent(extent: *vk.Extent2D, window: *glfw.Window, capabilities: vk.SurfaceCapabilitiesKHR) void {
     if (capabilities.current_extent.width != 0xFFFF_FFFF) {
+        extent.* = capabilities.current_extent;
         return;
     }
+
+    const size = window.getFramebufferSize();
+    extent.* = .{
+        .width = size.width,
+        .height = size.height, 
+    };
 
     if (extent.width < capabilities.min_image_extent.width) {
         extent.width = capabilities.min_image_extent.width;
@@ -815,7 +921,7 @@ fn choosePresentMode(present_modes: *const [present_modes_cap]vk.PresentModeKHR,
 }
 
 fn chooseSurfaceFormat(surface_formats: *const [surface_formats_cap]vk.SurfaceFormatKHR, len: u32) vk.SurfaceFormatKHR {
-    const wanted = .{
+    const wanted: vk.SurfaceFormatKHR = .{
         .format = .b8g8r8a8_srgb,
         .color_space = .srgb_nonlinear_khr,
     };
@@ -824,6 +930,6 @@ fn chooseSurfaceFormat(surface_formats: *const [surface_formats_cap]vk.SurfaceFo
             return wanted;
         }
     }
-
+    
     return surface_formats[0];
 }
