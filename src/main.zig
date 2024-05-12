@@ -2,6 +2,8 @@ const std = @import("std");
 const glfw = @import("glfw");
 const vk = @import("vk");
 const shaders = @import("shaders");
+const math = @import("math.zig");
+
 const print = std.debug.print;
 
 const required_device_extensions = [_][*:0]const u8{
@@ -11,6 +13,7 @@ const required_instance_extensions = [_][*:0]const u8{
     "VK_KHR_surface",
     "VK_KHR_win32_surface",
     "VK_EXT_debug_utils",
+    // "VK_EXT_layer_settings",
 };
 const required_validation_layers = [_][*:0]const u8{
     "VK_LAYER_KHRONOS_validation",
@@ -23,6 +26,61 @@ const pdevices_cap = 4;
 const validation_layers_cap = 16;
 const propss_cap = 4;
 const swapchain_cap = 4;
+
+const Vertex = extern struct {
+    x: f32, y: f32, z: f32,
+    r: f32, g: f32, b: f32,
+
+    const binding_description = vk.VertexInputBindingDescription {
+        .binding = 0,
+        .stride = @sizeOf(Vertex),
+        .input_rate = .vertex,
+    };
+
+    const attribute_descriptions = [_]vk.VertexInputAttributeDescription {
+        vk.VertexInputAttributeDescription {
+            .binding = 0,
+            .location = 0,
+            .format = .r32g32b32_sfloat,
+            .offset = @offsetOf(Vertex, "x"),
+        },
+        vk.VertexInputAttributeDescription {
+            .binding = 0,
+            .location = 1,
+            .format = .r32g32b32_sfloat,
+            .offset = @offsetOf(Vertex, "r"),
+        },
+    };
+};
+
+const CameraUBO = extern struct {
+    view: math.Affine3,
+    near_z: f32,    
+};
+
+const vertices = [_]Vertex {
+    Vertex {
+        .x = -0.5, .y = -0.5, .z = 0.0,
+        .r = 0.5, .g = 0.5, .b = 0.0,
+    },
+    Vertex {
+        .x = 0.5, .y = -0.5, .z = 0.0,
+        .r = 0.0, .g = 1.0, .b = 0.0,
+    },
+    Vertex {
+        .x = 0.5, .y = 0.5, .z = 0.0,
+        .r = 1.0, .g = 0.0, .b = 1.0,
+    },
+    Vertex {
+        .x = -0.5, .y = 0.5, .z = 0.0,
+        .r = 0.0, .g = 1.0, .b = 1.0,
+    },
+};
+
+const indices = [_]u16 {
+    0, 1, 2, 
+    2, 3, 0,
+};
 
 fn debugCallback(
     message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, 
@@ -45,7 +103,7 @@ fn debugCallback(
     }
 
     print(
-        "\x1b[9{c};1;4m{s}\x1b[0m\x1b[9{c}m\n{s}\n\x1b[0m\n",
+        "\x1b[9{c};1;4m{s}\x1b[m\x1b[9{c}m\n{s}\n\x1b[m\n",
         .{
             color_code,
             data.p_message_id_name.?,
@@ -54,7 +112,6 @@ fn debugCallback(
         },
     );
     
-
     return vk.FALSE;
 }
 
@@ -139,6 +196,83 @@ pub fn main() !void {
         },
         .pfn_user_callback = &debugCallback,
     };
+
+    // ensure .FALSE and .TRUE are of type u32
+    const report_flags = &[_][]const u8{"info","warn","perf","error","debug"};
+    const validate_sync = vk.TRUE;
+    const validate_core = vk.TRUE;
+    const thread_safety = vk.TRUE;
+    const best_practices = vk.TRUE;
+    const debug_action = "VK_DBG_LAYER_ACTION_LOG_MSG";
+    const enable_message_limit = vk.TRUE;
+    const duplicate_message_limit: u32 = 1;
+
+    const layer_settings = [_]vk.LayerSettingEXT {
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "validate_core",
+            .type = .bool32_ext,
+            .value_count = 1,
+            .p_values = &validate_core,
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "validate_sync",
+            .type = .bool32_ext,
+            .value_count = 1,
+            .p_values = &validate_sync,
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "validate_best_practices",
+            .type = .bool32_ext,
+            .value_count = 1,
+            .p_values = &best_practices,
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "thread_safety",
+            .type = .bool32_ext,
+            .value_count = 1,
+            .p_values = &thread_safety,
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "debug_action",
+            .type = .string_ext,
+            .value_count = 1,
+            .p_values = @ptrCast(debug_action),
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "report_flags",
+            .type = .string_ext,
+            .value_count = report_flags.len,
+            .p_values = @ptrCast(&report_flags),
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "enable_message_limit",
+            .type = .bool32_ext,
+            .value_count = 1,
+            .p_values = &enable_message_limit,
+        },
+        vk.LayerSettingEXT {
+            .p_layer_name = "VK_LAYER_KHRONOS_validation",
+            .p_setting_name = "duplicate_message_limit",
+            .type = .uint32_ext,
+            .value_count = 1,
+            .p_values = &duplicate_message_limit,
+        },
+    };
+
+
+    const layer_settings_create_info = vk.LayerSettingsCreateInfoEXT {
+        .setting_count = layer_settings.len,
+        .p_settings = &layer_settings,
+        .p_next = &debug_create_info,
+    };
+
     const instance = try vkb.createInstance(
         &.{
             .p_application_info = &.{
@@ -152,7 +286,7 @@ pub fn main() !void {
             .pp_enabled_layer_names = &required_validation_layers,
             .enabled_extension_count = required_instance_extensions.len,
             .pp_enabled_extension_names = &required_instance_extensions,
-            .p_next = &debug_create_info,
+            .p_next = &layer_settings_create_info,
         }, 
         null,
     );
@@ -289,7 +423,7 @@ pub fn main() !void {
             .pp_enabled_extension_names = &required_device_extensions,
             .queue_create_info_count = 2,
             .p_enabled_features = &pdevice_features,
-        }, 
+        },
         null
     );
     const vkd = try DeviceDispatch.load(device, vki.dispatch.vkGetDeviceProcAddr);
@@ -415,11 +549,30 @@ pub fn main() !void {
         },
     };
 
+    const descriptor_layout_bindings = [_]vk.DescriptorSetLayoutBinding {
+        vk.DescriptorSetLayoutBinding{
+            .binding = 0,     
+            .descriptor_type = .uniform_buffer_dynamic,
+            .descriptor_count = 1,
+            .stage_flags = .{ .vertex_bit = true },
+        },
+    };
+    const descriptor_set_layout = try vkd.createDescriptorSetLayout(
+        device, 
+        &.{
+            .binding_count = descriptor_layout_bindings.len,
+            .p_bindings = &descriptor_layout_bindings,
+        }, 
+        null,
+    );
+    defer vkd.destroyDescriptorSetLayout(device, descriptor_set_layout, null);
+
+
     const vertex_input_state_ci = vk.PipelineVertexInputStateCreateInfo{
-        .vertex_binding_description_count = 0,
-        .p_vertex_binding_descriptions = null,
-        .vertex_attribute_description_count = 0,
-        .p_vertex_attribute_descriptions = null,
+        .vertex_binding_description_count = 1,
+        .p_vertex_binding_descriptions = @ptrCast(&Vertex.binding_description),
+        .vertex_attribute_description_count = Vertex.attribute_descriptions.len,
+        .p_vertex_attribute_descriptions = &Vertex.attribute_descriptions,
     };
 
     const input_assembly_state_ci = vk.PipelineInputAssemblyStateCreateInfo{
@@ -637,9 +790,228 @@ pub fn main() !void {
         vkd.destroySemaphore(device, image_rendered_array[i], null);
     };
 
+    const pdevice_mem_props = vki.getPhysicalDeviceMemoryProperties(pdevice);
+
+    const vertex_buffer_info = vk.BufferCreateInfo {
+        .size = @sizeOf(Vertex) * vertices.len,
+        .usage = .{ 
+            .vertex_buffer_bit = true,
+            .transfer_dst_bit = true,
+        },
+        .sharing_mode = .exclusive
+    };
+    const vertex_buffer = try vkd.createBuffer(
+        device, 
+        &vertex_buffer_info,
+        null,
+    );
+
+    const vertex_mem_requirements = vkd.getBufferMemoryRequirements(device, vertex_buffer);
+
+    const vertex_memory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = vertex_mem_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                vertex_mem_requirements.memory_type_bits,
+                .{
+                    .device_local_bit = true,
+                },
+                pdevice_mem_props, 
+            ),
+        },
+        null,
+    );
+    defer vkd.freeMemory(device, vertex_memory, null);
+    _ = try vkd.bindBufferMemory(
+        device, 
+        vertex_buffer, 
+        vertex_memory, 
+        0,
+    );
+
+    const index_buffer_info = vk.BufferCreateInfo {
+        .size = @sizeOf(u16) * indices.len,
+        .usage = .{ 
+            .index_buffer_bit = true,
+            .transfer_dst_bit = true,
+        },
+        .sharing_mode = .exclusive
+    };
+    const index_buffer = try vkd.createBuffer(
+        device, 
+        &index_buffer_info,
+        null,
+    );
+
+    const index_mem_requirements = vkd.getBufferMemoryRequirements(device, index_buffer);
+    const index_memory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = index_mem_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                index_mem_requirements.memory_type_bits,
+                .{
+                    .device_local_bit = true,
+                },
+                pdevice_mem_props, 
+            ),
+        },
+        null,
+    );
+    defer vkd.freeMemory(device, index_memory, null);
+    _ = try vkd.bindBufferMemory(
+        device, 
+        index_buffer, 
+        index_memory, 
+        0,
+    );
+
+    const staging_buffer_info = vk.BufferCreateInfo {
+        .size = vertex_buffer_info.size + index_buffer_info.size,
+        .usage = .{ 
+            .transfer_src_bit = true,
+        },
+        .sharing_mode = .exclusive
+    };
+    const staging_buffer = try vkd.createBuffer(
+        device, 
+        &staging_buffer_info,
+        null,
+    );
+
+    const staging_memory_requirements = vkd.getBufferMemoryRequirements(device, staging_buffer);
+    const staging_memmory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = staging_memory_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                staging_memory_requirements.memory_type_bits, 
+                .{
+                    .host_visible_bit = true,
+                    .host_coherent_bit = true,
+                }, 
+                pdevice_mem_props,
+            ),
+        }, 
+        null,
+    );
+    defer vkd.freeMemory(device, staging_memmory, null);
+    _ = try vkd.bindBufferMemory(
+        device, 
+        staging_buffer, 
+        staging_memmory, 
+        0,
+    );
+
+    const uniform_buffer_info = vk.BufferCreateInfo {
+        .size = @sizeOf(CameraUBO) * swapchain_images_len,
+        .usage = .{
+            .uniform_buffer_bit = true
+        },
+        .sharing_mode = .exclusive,
+    };
+    const uniform_buffer = try vkd.createBuffer(device, &uniform_buffer_info, null);
+    const uniform_memory_requirements = vkd.getBufferMemoryRequirements(device, uniform_buffer);
+
+    const uniform_memory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = uniform_memory_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                uniform_memory_requirements.memory_type_bits, 
+                .{
+                    .host_visible_bit = true,
+                    .host_coherent_bit = true,
+                },
+                pdevice_mem_props,
+            ),
+        },
+        null,
+    );
+    defer vkd.freeMemory(device, uniform_memory, null);
+    var camera_ubos: []CameraUBO = @as([*]CameraUBO, @ptrCast(@alignCast(
+        (try vkd.mapMemory(
+            device, 
+            uniform_memory, 
+            0, 
+            uniform_buffer_info.size, 
+            .{},
+        )).?
+    )))[0..swapchain_images_len];
+    camera_ubos[0] = CameraUBO{
+        .view = math.Affine3.identity,
+        .near_z = 1,
+    };
+    defer vkd.unmapMemory(device, uniform_memory);
+
+    const staging_ptr: []u8 = @as([*]u8, @ptrCast(
+        (try vkd.mapMemory(
+            device, 
+            staging_memmory, 
+            0, 
+            staging_buffer_info.size, 
+            .{},
+        )).?
+    ))[0..staging_buffer_info.size];
+    @memcpy(staging_ptr[0..vertex_buffer_info.size], @as([*]const u8, @ptrCast(&vertices)));
+    @memcpy(staging_ptr[vertex_buffer_info.size..staging_buffer_info.size], @as([*]const u8, @ptrCast(&indices)));
+    vkd.unmapMemory(device, staging_memmory);
+
+    defer vkd.destroyBuffer(device, vertex_buffer, null);
+    defer vkd.destroyBuffer(device, staging_buffer, null);
+    defer vkd.destroyBuffer(device, index_buffer, null);
+    defer vkd.destroyBuffer(device, uniform_buffer, null);
+    // copy memory
+    {
+        const command_buffer = command_buffers[0];
+        _ = try vkd.beginCommandBuffer(
+            command_buffer,
+            &.{}
+        );
+
+        vkd.cmdCopyBuffer(
+            command_buffer, 
+            staging_buffer, 
+            vertex_buffer, 
+            1, 
+            @ptrCast(&vk.BufferCopy{
+                .src_offset = 0,
+                .dst_offset = 0,
+                .size = vertex_buffer_info.size,
+            }),
+        );
+
+        vkd.cmdCopyBuffer(
+            command_buffer, 
+            staging_buffer, 
+            index_buffer, 
+            1, 
+            @ptrCast(&vk.BufferCopy{
+                .src_offset = vertex_buffer_info.size,
+                .dst_offset = 0,
+                .size = index_buffer_info.size,
+            }),
+        );
+
+        _ = try vkd.endCommandBuffer(command_buffer);
+
+        _ = try vkd.queueSubmit(
+            graphics_queue, 
+            1, 
+            @ptrCast(&vk.SubmitInfo{
+                .command_buffer_count = 1,
+                .p_command_buffers = @ptrCast(&command_buffer),
+            }),
+            .null_handle,
+        );
+
+        _ = try vkd.queueWaitIdle(graphics_queue);
+    }
+
     var swapchain_image_index: u32 = 0;
     while (true) {
-        if (window.getKey(.escape) == .press) {
+        if (window.shouldClose() or window.getKey(.escape) == .press) {
             break;
         }
 
@@ -678,10 +1050,7 @@ pub fn main() !void {
 
         _ = try vkd.beginCommandBuffer(
             command_buffer, 
-            @ptrCast(&vk.CommandBufferBeginInfo {
-                .flags = .{},
-                .p_inheritance_info = null,
-            }),
+            &.{},
         );
 
         const clear_colors = [_]vk.ClearValue {
@@ -744,14 +1113,31 @@ pub fn main() !void {
             }),
         );
 
-        vkd.cmdDraw(
+        vkd.cmdBindVertexBuffers(
             command_buffer, 
-            3, 
-            1,
             0, 
-            0
+            1, 
+            @ptrCast(&vertex_buffer)
+            , 
+            &.{0},
         );
 
+        vkd.cmdBindIndexBuffer(
+            command_buffer, 
+            index_buffer, 
+            0, 
+            .uint16,
+        );
+
+        vkd.cmdDrawIndexed(
+            command_buffer, 
+            indices.len, 
+            1, 
+            0, 
+            0, 
+            0,
+        );
+        
         vkd.cmdEndRenderPass(command_buffer);
 
         _ = try vkd.endCommandBuffer(command_buffer);
@@ -918,6 +1304,19 @@ fn choosePresentMode(present_modes: *const [present_modes_cap]vk.PresentModeKHR,
         }
     }
     return .fifo_khr;
+}
+
+fn findMemoryTypeIndex(
+    type_mask: u32, 
+    required_props: vk.MemoryPropertyFlags,
+    props: vk.PhysicalDeviceMemoryProperties,
+) u32 {
+    for (props.memory_types[0..props.memory_type_count], 0..) |mem_type, i| {
+        if (type_mask & (@as(u32, 1) << @truncate(i)) != 0 and mem_type.property_flags.contains(required_props)) {
+            return @truncate(i);
+        }
+    }
+    unreachable;
 }
 
 fn chooseSurfaceFormat(surface_formats: *const [surface_formats_cap]vk.SurfaceFormatKHR, len: u32) vk.SurfaceFormatKHR {
