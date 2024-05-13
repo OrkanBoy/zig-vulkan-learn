@@ -1,6 +1,4 @@
 const std = @import("std").math;
-const cos = std.cos;
-const sin = std.sin;
 
 pub const Affine3 = extern struct {    
     xx: f32,
@@ -20,18 +18,18 @@ pub const Affine3 = extern struct {
 
     const Self = @This();
     pub const identity = Self {
-        .xx = 1,
-        .yx = 0,
-        .zx = 0,
-        ._x = 0,
-        .xy = 0,
-        .yy = 1,
-        .zy = 0,
-        ._y = 0,
-        .xz = 0,
-        .yz = 0,
-        .zz = 1,
-        ._z = 0,
+        .xx = 1.0,
+        .yx = 0.0,
+        .zx = 0.0,
+        ._x = 0.0,
+        .xy = 0.0,
+        .yy = 1.0,
+        .zy = 0.0,
+        ._y = 0.0,
+        .xz = 0.0,
+        .yz = 0.0,
+        .zz = 1.0,
+        ._z = 0.0,
     };
 
     pub fn compose(self: Self, other: Self) Self {
@@ -87,29 +85,29 @@ pub const Affine3 = extern struct {
         const zx_zx = b.zx * b.zx;
         const xy_xy = b.xy * b.xy;
 
-        const c = cos(norm);
-        const s = sin(norm);
-        const one_sub_cos = 1 - c;
+        const cos = @cos(norm);
+        const sin = @sin(norm);
+        const one_sub_cos = 1.0 - cos;
 
-        const yz_sin = b.yz * s;
-        const zx_sin = b.zx * s;
-        const xy_sin = b.xy * s;
+        const yz_sin = b.yz * sin;
+        const zx_sin = b.zx * sin;
+        const xy_sin = b.xy * sin;
 
         const zx_yz_one_sub_cos = zx_yz * one_sub_cos;
         const yz_xy_one_sub_cos = yz_xy * one_sub_cos;
         const xy_zx_one_sub_cos = xy_zx * one_sub_cos;
 
-        const xx = (1 - yz_yz) * cos + yz_yz;
+        const xx = (1.0 - yz_yz) * cos + yz_yz;
         const xy = zx_yz_one_sub_cos + xy_sin;
         const xz = yz_xy_one_sub_cos - zx_sin;
 
         const yx = zx_yz_one_sub_cos - xy_sin;
-        const yy = (1 - zx_zx) * cos + zx_zx;
+        const yy = (1.0 - zx_zx) * cos + zx_zx;
         const yz = xy_zx_one_sub_cos + yz_sin;
 
         const zx = yz_xy_one_sub_cos + zx_sin;
         const zy = xy_zx_one_sub_cos - yz_sin;
-        const zz = (1 - xy_xy) * cos + xy_xy;
+        const zz = (1.0 - xy_xy) * cos + xy_xy;
 
         self = .{
             .xx = self.xx * xx + self.xy * yx + self.xz * zx,
@@ -140,9 +138,9 @@ pub const Vector3 = extern struct {
     z: f32,
 
     pub const identity = Self {
-        .x = 0,
-        .y = 0,
-        .z = 0,
+        .x = 0.0,
+        .y = 0.0,
+        .z = 0.0,
     };
 
     pub fn add(self: Self, other: Self) Self {
@@ -226,9 +224,9 @@ pub const Bivector3 = extern struct  {
 
     const Self = @This();
     const identity = Self {
-        .xy = 0,
-        .yz = 0,
-        .zx = 0,
+        .xy = 0.0,
+        .yz = 0.0,
+        .zx = 0.0,
     };
 
     pub fn commute(self: Self, other: Bivector3) Bivector3 {
@@ -247,14 +245,14 @@ pub const Bivector3 = extern struct  {
     /// hence we can factor the BiVector to a scalar and unit biVector
     pub fn exp(self: *Self) Rotor3 {
         const _norm_sqr = self.norm_sqr();
-        if (_norm_sqr == 0) {
+        if (_norm_sqr == 0.0) {
             return Rotor3.identity;
         }
         const norm = _norm_sqr.sqrt();
-        const b = self.mul(norm.sin() / norm);
+        const b = self.mul(@sin(norm) / norm);
 
         return .{
-            ._1 = cos(norm),
+            ._1 = @cos(norm),
             .xy = b.xy,
             .yz = b.yz,
             .zx = b.zx,
@@ -292,10 +290,10 @@ pub const Rotor3 = extern struct {
 
     const Self = @This();
     const identity = Self {
-        ._1 = 1,
-        .xy = 0,
-        .yz = 0,
-        .zx = 0,
+        ._1 = 1.0,
+        .xy = 0.0,
+        .yz = 0.0,
+        .zx = 0.0,
     };
 
     pub fn mul(self: Self, other: Rotor3) Self {
@@ -326,8 +324,68 @@ pub const Scale3 = struct {
 
     const Self = @This();
     const identity = Self {
-        .x = 1,
-        .y = 1,
-        .z = 1,
+        .x = 1.0,
+        .y = 1.0,
+        .z = 1.0,
     };
+};
+
+pub const Vector2 = extern struct {
+    const Self = @This();
+    x: f32,
+    y: f32,
+
+    pub const identity = Self {
+        .x = 0.0,
+        .y = 0.0,
+    };
+
+    pub fn add(self: Self, other: Self) Self {
+        return .{
+            .x = self.x + other.x,
+            .y = self.y + other.y,
+        };
+    }
+
+    pub fn sub(self: Self, other: Self) Self {
+        return .{
+            .x = self.x - other.x,
+            .y = self.y - other.y,
+        };
+    }
+
+    pub fn mul_f32(self: Self, other: f32) Self {
+        return .{
+            .x = self.x * other,
+            .y = self.y * other,
+        };
+    }
+
+    pub fn div_f32(self: Self, other: f32) Self {
+        return .{
+            .x = self.x / other,
+            .y = self.y / other,
+        };
+    }
+
+    pub fn neg(self: Self) Self {
+        return .{
+            .x = -self.x,
+            .y = -self.y,
+        };
+    }
+
+    pub fn dot(self: Self, other: Self) f32 {
+        return self.x * other.x + self.y * other.y;
+    }
+
+    pub fn add_assign(self: *Self, other: Self) void {
+        self.x += other.x;
+        self.y += other.y;
+    }
+
+    pub fn sub_assign(self: *Self, other: Self) void {
+        self.x -= other.x;
+        self.y -= other.y;
+    }
 };

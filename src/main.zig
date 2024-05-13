@@ -53,32 +53,40 @@ const Vertex = extern struct {
     };
 };
 
-const CameraUBO = extern struct {
+const CameraRender = extern struct {
     view: math.Affine3,
-    near_z: f32,    
+    near_z: f32,
+};
+
+const Camera = struct {
+    front: math.Vector2,
+    right: math.Vector2,
+    position: math.Vector3,
+    xz_to_y: f32,
+    x_to_z: f32,
 };
 
 const vertices = [_]Vertex {
     Vertex {
-        .x = -0.5, .y = -0.5, .z = 0.0,
+        .x = 0.5, .y = 0.5, .z = 0.5,
         .r = 0.5, .g = 0.5, .b = 0.0,
     },
     Vertex {
-        .x = 0.5, .y = -0.5, .z = 0.0,
+        .x = 0.5, .y = -0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 0.0,
     },
     Vertex {
-        .x = 0.5, .y = 0.5, .z = 0.0,
+        .x = -0.5, .y = -0.5, .z = 0.5,
         .r = 1.0, .g = 0.0, .b = 1.0,
     },
     Vertex {
-        .x = -0.5, .y = 0.5, .z = 0.0,
+        .x = -0.5, .y = 0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 1.0,
     },
 };
 
 const indices = [_]u16 {
-    0, 1, 2, 
+    0, 1, 2,
     2, 3, 0,
 };
 
@@ -101,7 +109,7 @@ fn debugCallback(
     } else {
         color_code = '1';
     }
-
+    if (data.p_message_id_name != null and data.p_message != null) {
     print(
         "\x1b[9{c};1;4m{s}\x1b[m\x1b[9{c}m\n{s}\n\x1b[m\n",
         .{
@@ -111,6 +119,8 @@ fn debugCallback(
             data.p_message.?,
         },
     );
+    }
+
     
     return vk.FALSE;
 }
@@ -199,13 +209,6 @@ pub fn main() !void {
 
     // ensure .FALSE and .TRUE are of type u32
     const report_flags = &[_][]const u8{"info","warn","perf","error","debug"};
-    const validate_sync = vk.TRUE;
-    const validate_core = vk.TRUE;
-    const thread_safety = vk.TRUE;
-    const best_practices = vk.TRUE;
-    const debug_action = "VK_DBG_LAYER_ACTION_LOG_MSG";
-    const enable_message_limit = vk.TRUE;
-    const duplicate_message_limit: u32 = 1;
 
     const layer_settings = [_]vk.LayerSettingEXT {
         vk.LayerSettingEXT {
@@ -213,35 +216,35 @@ pub fn main() !void {
             .p_setting_name = "validate_core",
             .type = .bool32_ext,
             .value_count = 1,
-            .p_values = &validate_core,
+            .p_values = &vk.TRUE,
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
             .p_setting_name = "validate_sync",
             .type = .bool32_ext,
             .value_count = 1,
-            .p_values = &validate_sync,
+            .p_values = &vk.TRUE,
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
             .p_setting_name = "validate_best_practices",
             .type = .bool32_ext,
             .value_count = 1,
-            .p_values = &best_practices,
+            .p_values = &vk.TRUE,
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
             .p_setting_name = "thread_safety",
             .type = .bool32_ext,
             .value_count = 1,
-            .p_values = &thread_safety,
+            .p_values = &vk.TRUE,
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
             .p_setting_name = "debug_action",
             .type = .string_ext,
             .value_count = 1,
-            .p_values = @ptrCast(debug_action),
+            .p_values = @ptrCast("VK_DBG_LAYER_ACTION_LOG_MSG"),
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
@@ -255,17 +258,16 @@ pub fn main() !void {
             .p_setting_name = "enable_message_limit",
             .type = .bool32_ext,
             .value_count = 1,
-            .p_values = &enable_message_limit,
+            .p_values = &vk.TRUE,
         },
         vk.LayerSettingEXT {
             .p_layer_name = "VK_LAYER_KHRONOS_validation",
             .p_setting_name = "duplicate_message_limit",
             .type = .uint32_ext,
             .value_count = 1,
-            .p_values = &duplicate_message_limit,
+            .p_values = &@as(u32, 1),
         },
     };
-
 
     const layer_settings_create_info = vk.LayerSettingsCreateInfoEXT {
         .setting_count = layer_settings.len,
@@ -567,6 +569,32 @@ pub fn main() !void {
     );
     defer vkd.destroyDescriptorSetLayout(device, descriptor_set_layout, null);
 
+    const descriptor_pool = try vkd.createDescriptorPool(
+        device, 
+        &.{
+            .pool_size_count = 1,
+            .p_pool_sizes = &[_]vk.DescriptorPoolSize {
+                vk.DescriptorPoolSize {
+                    .type = .uniform_buffer_dynamic,
+                    .descriptor_count = 1,
+                },
+            },
+            .max_sets = 1,
+        }, 
+        null,
+    );
+    defer vkd.destroyDescriptorPool(device, descriptor_pool, null);
+
+    var descriptor_set: vk.DescriptorSet = undefined; 
+    _ = try vkd.allocateDescriptorSets(
+        device, 
+        @ptrCast(&vk.DescriptorSetAllocateInfo{
+            .descriptor_pool = descriptor_pool,
+            .descriptor_set_count = 1,
+            .p_set_layouts = @ptrCast(&descriptor_set_layout),
+        }),
+        @ptrCast(&descriptor_set),
+    );
 
     const vertex_input_state_ci = vk.PipelineVertexInputStateCreateInfo{
         .vertex_binding_description_count = 1,
@@ -592,12 +620,12 @@ pub fn main() !void {
         .rasterizer_discard_enable = vk.FALSE,
         .polygon_mode = .fill,
         .cull_mode = .{ .back_bit = true },
-        .front_face = .clockwise,
+        .front_face = .counter_clockwise,
         .depth_bias_enable = vk.FALSE,
-        .depth_bias_constant_factor = 0,
-        .depth_bias_clamp = 0,
-        .depth_bias_slope_factor = 0,
-        .line_width = 1,
+        .depth_bias_constant_factor = 0.0,
+        .depth_bias_clamp = 0.0,
+        .depth_bias_slope_factor = 0.0,
+        .line_width = 1.0,
     };
 
     const multi_sample_state_ci = vk.PipelineMultisampleStateCreateInfo{
@@ -627,7 +655,7 @@ pub fn main() !void {
         .logic_op = .copy,
         .attachment_count = 1,
         .p_attachments = &blend_attachment_states,
-        .blend_constants = [_]f32{ 0, 0, 0, 0, },
+        .blend_constants = [_]f32{ 0.0, 0.0, 0.0, 0.0, },
     };
 
     const dynamic_states = [_]vk.DynamicState{ 
@@ -643,11 +671,11 @@ pub fn main() !void {
     const pipeline_layout = try vkd.createPipelineLayout(
         device,
         &.{
-            .set_layout_count = 0,
-            .p_set_layouts = null,
+            .set_layout_count = 1,
+            .p_set_layouts = @ptrCast(&descriptor_set_layout),
             .push_constant_range_count = 0,
             .p_push_constant_ranges = null,
-        }, 
+        },
         null
     );
     defer vkd.destroyPipelineLayout(device, pipeline_layout, null);
@@ -904,8 +932,9 @@ pub fn main() !void {
         0,
     );
 
+    const uniform_buffer_stride = @max(@sizeOf(CameraRender), pdevice_props.limits.min_uniform_buffer_offset_alignment);
     const uniform_buffer_info = vk.BufferCreateInfo {
-        .size = @sizeOf(CameraUBO) * swapchain_images_len,
+        .size = uniform_buffer_stride * swapchain_images_len,
         .usage = .{
             .uniform_buffer_bit = true
         },
@@ -930,7 +959,14 @@ pub fn main() !void {
         null,
     );
     defer vkd.freeMemory(device, uniform_memory, null);
-    var camera_ubos: []CameraUBO = @as([*]CameraUBO, @ptrCast(@alignCast(
+    _ = try vkd.bindBufferMemory(
+        device, 
+        uniform_buffer, 
+        uniform_memory, 
+        0,
+    );
+
+    const uniform_ptr: [*]u8 = @as([*]u8, @ptrCast(
         (try vkd.mapMemory(
             device, 
             uniform_memory, 
@@ -938,12 +974,29 @@ pub fn main() !void {
             uniform_buffer_info.size, 
             .{},
         )).?
-    )))[0..swapchain_images_len];
-    camera_ubos[0] = CameraUBO{
-        .view = math.Affine3.identity,
-        .near_z = 1,
-    };
+    ));
     defer vkd.unmapMemory(device, uniform_memory);
+
+    vkd.updateDescriptorSets(
+        device, 
+        1, 
+        @ptrCast(&vk.WriteDescriptorSet{
+            .descriptor_type = .uniform_buffer_dynamic,
+            .descriptor_count = 1,
+            .dst_set = descriptor_set,
+            .dst_binding = 0,
+            .dst_array_element = 0,
+            .p_buffer_info = @as([*]const vk.DescriptorBufferInfo, @ptrCast(&vk.DescriptorBufferInfo{
+                .buffer = uniform_buffer,
+                .offset = 0,
+                .range = uniform_buffer_stride,
+            })),
+            .p_image_info = undefined,
+            .p_texel_buffer_view = undefined,
+        }), 
+        0, 
+        null,
+    );
 
     const staging_ptr: []u8 = @as([*]u8, @ptrCast(
         (try vkd.mapMemory(
@@ -1009,7 +1062,24 @@ pub fn main() !void {
         _ = try vkd.queueWaitIdle(graphics_queue);
     }
 
+    var width_to_height = @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
+
+    // x corresponds to world z
+    // // y corresponds to world x
+    // var camera = Camera {
+    //     .front = undefined,
+    //     .right = undefined,
+    //     .position = math.Vector3 {
+    //         .x = 0.0,
+    //         .y = 0.0,
+    //         .z = 0.0,
+    //     },
+    //     .x_to_z = 0.0,
+    //     .xz_to_y = 0.0,
+    // };
+
     var swapchain_image_index: u32 = 0;
+    var last_time = glfw.getTime();
     while (true) {
         if (window.shouldClose() or window.getKey(.escape) == .press) {
             break;
@@ -1020,6 +1090,7 @@ pub fn main() !void {
         const frame_ready = frame_ready_array[swapchain_image_index];
         const command_buffer = command_buffers[swapchain_image_index];
         const swapchain_framebuffer = swapchain_framebuffers[swapchain_image_index];
+        const camera_render: *CameraRender = @ptrCast(@alignCast(uniform_ptr + uniform_buffer_stride * swapchain_image_index));
 
         _ = try vkd.waitForFences(
             device, 
@@ -1039,6 +1110,15 @@ pub fn main() !void {
         if (result_image_index != swapchain_image_index) {
             return error.AcquireNextImageMismatch;
         }
+
+        camera_render.near_z = 0.1;
+        camera_render.view = math.Affine3.identity;
+        _ = camera_render.view.scale(.{
+            .x = 2.0 / 5.0,
+            .y = 2.0 / 5.0 * width_to_height,
+            .z = 1.0,
+        });
+
         
         _ = try vkd.resetFences(
             device, 
@@ -1127,6 +1207,17 @@ pub fn main() !void {
             index_buffer, 
             0, 
             .uint16,
+        );
+
+        vkd.cmdBindDescriptorSets(
+            command_buffer, 
+            .graphics, 
+            pipeline_layout, 
+            0, 
+            1, 
+            @ptrCast(&descriptor_set), 
+            1,
+            @ptrCast(&(uniform_buffer_stride * swapchain_image_index)),
         );
 
         vkd.cmdDrawIndexed(
@@ -1254,6 +1345,8 @@ pub fn main() !void {
                     );
                 }
                 swapchain_image_index = 0;
+
+                width_to_height = @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
                 continue;
             },
             .success => {},
@@ -1265,6 +1358,10 @@ pub fn main() !void {
         } else {
             swapchain_image_index += 1;
         }
+
+        const time = glfw.getTime();
+        // print("{}\n", .{@as(u16, @intFromFloat(1.0 / (time - last_time)))});
+        last_time = time;
 
         glfw.pollEvents();
     }
