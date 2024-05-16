@@ -3,6 +3,7 @@ const glfw = @import("glfw");
 const vk = @import("vk");
 const shaders = @import("shaders");
 const math = @import("math.zig");
+const img = @import("image");
 
 const print = std.debug.print;
 
@@ -25,11 +26,16 @@ const extensions_cap = 256;
 const pdevices_cap = 4;
 const validation_layers_cap = 16;
 const propss_cap = 4;
-const swapchain_cap = 4;
+const present_frames_cap = 4;
+const render_frames_cap = present_frames_cap - 1;
+
+const target_fps = 60;
+const target_dt: f32 = 1.0 / @as(f32, @floatFromInt(target_fps));
 
 const Vertex = extern struct {
     x: f32, y: f32, z: f32,
     r: f32, g: f32, b: f32,
+    u: f32, v: f32,
 
     const binding_description = vk.VertexInputBindingDescription {
         .binding = 0,
@@ -50,44 +56,77 @@ const Vertex = extern struct {
             .format = .r32g32b32_sfloat,
             .offset = @offsetOf(Vertex, "r"),
         },
+        vk.VertexInputAttributeDescription {
+            .binding = 0,
+            .location = 2,
+            .format = .r32g32_sfloat,
+            .offset = @offsetOf(Vertex, "u"),
+        },
     };
 };
 
-const CameraRender = extern struct {
-    view: math.Affine3,
+const Camera = extern struct {
+    position: math.Vector3,
     near_z: f32,
+    cos_z_to_y: f32,
+    sin_z_to_y: f32,
+    cos_z_to_x: f32,
+    sin_z_to_x: f32,
+    x_scale: f32,
+    y_scale: f32,
 };
 
-const Camera = struct {
-    front: math.Vector2,
-    right: math.Vector2,
-    position: math.Vector3,
-    xz_to_y: f32,
-    x_to_z: f32,
-};
 
 const vertices = [_]Vertex {
     Vertex {
         .x = 0.5, .y = 0.5, .z = 0.5,
         .r = 0.5, .g = 0.5, .b = 0.0,
+        .u = 1.0, .v = 0.0,
     },
     Vertex {
         .x = 0.5, .y = -0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 0.0,
+        .u = 1.0, .v = 1.0,
     },
     Vertex {
         .x = -0.5, .y = -0.5, .z = 0.5,
         .r = 1.0, .g = 0.0, .b = 1.0,
+        .u = 0.0, .v = 1.0,
     },
     Vertex {
         .x = -0.5, .y = 0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 1.0,
+        .u = 0.0, .v = 0.0,
+    },
+
+    Vertex {
+        .x = 0.5, .y = 0.5, .z = 1.0,
+        .r = 0.5, .g = 0.5, .b = 0.0,
+        .u = 1.0, .v = 0.0,
+    },
+    Vertex {
+        .x = 0.5, .y = -0.5, .z = 1.0,
+        .r = 0.0, .g = 1.0, .b = 0.0,
+        .u = 1.0, .v = 1.0,
+    },
+    Vertex {
+        .x = -0.5, .y = -0.5, .z = 1.0,
+        .r = 1.0, .g = 0.0, .b = 1.0,
+        .u = 0.0, .v = 1.0,
+    },
+    Vertex {
+        .x = -0.5, .y = 0.5, .z = 1.0,
+        .r = 0.0, .g = 1.0, .b = 1.0,
+        .u = 0.0, .v = 0.0,
     },
 };
 
 const indices = [_]u16 {
     0, 1, 2,
     2, 3, 0,
+
+    4, 5, 6,
+    6, 7, 4,
 };
 
 fn debugCallback(
@@ -175,14 +214,14 @@ pub fn main() !void {
 
     const vkb: BaseDispatch = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
 
-    var validation_layers_len: u32 = undefined;
-    _ = try vkb.enumerateInstanceLayerProperties(&validation_layers_len, null);
+    var validation_layers_count: u32 = undefined;
+    _ = try vkb.enumerateInstanceLayerProperties(&validation_layers_count, null);
 
     var validation_layers: [validation_layers_cap]vk.LayerProperties = undefined;
-    _ = try vkb.enumerateInstanceLayerProperties(&validation_layers_len, &validation_layers);
+    _ = try vkb.enumerateInstanceLayerProperties(&validation_layers_count, &validation_layers);
 
     outer: for (required_validation_layers) |required_layer| {
-        for (0..validation_layers_len) |validation_layer_i| {
+        for (0..validation_layers_count) |validation_layer_i| {
             const validation_layer = validation_layers[validation_layer_i];
             if (std.mem.eql(u8, std.mem.span(required_layer), std.mem.sliceTo(&validation_layer.layer_name, 0))) {
                 continue :outer;
@@ -310,11 +349,11 @@ pub fn main() !void {
     }
     defer vki.destroySurfaceKHR(instance, surface, null);
 
-    var pdevices_len: u32 = undefined;
-    _ = try vki.enumeratePhysicalDevices(instance, &pdevices_len, null);
+    var pdevices_count: u32 = undefined;
+    _ = try vki.enumeratePhysicalDevices(instance, &pdevices_count, null);
 
     var pdevices: [pdevices_cap]vk.PhysicalDevice = undefined;
-    _ = try vki.enumeratePhysicalDevices(instance, &pdevices_len, &pdevices);
+    _ = try vki.enumeratePhysicalDevices(instance, &pdevices_count, &pdevices);
     
     var pdevice: vk.PhysicalDevice = undefined;
     var pdevice_i: usize = 0;
@@ -332,17 +371,17 @@ pub fn main() !void {
         pdevice_props = vki.getPhysicalDeviceProperties(pdevice);
         pdevice_features = vki.getPhysicalDeviceFeatures(pdevice);
 
-        var propss_len: u32 = undefined;
-        vki.getPhysicalDeviceQueueFamilyProperties(pdevice, &propss_len, null);
+        var propss_count: u32 = undefined;
+        vki.getPhysicalDeviceQueueFamilyProperties(pdevice, &propss_count, null);
 
         var propss: [propss_cap]vk.QueueFamilyProperties = undefined;
-        vki.getPhysicalDeviceQueueFamilyProperties(pdevice, &propss_len, &propss);
+        vki.getPhysicalDeviceQueueFamilyProperties(pdevice, &propss_count, &propss);
 
         _graphics_family = null;
         _present_family = null;
         var queue_family: u32 = 0;
 
-        pdevice: while (queue_family != propss_len) {
+        pdevice: while (queue_family != propss_count) {
             const props = propss[queue_family];
             if (props.queue_flags.graphics_bit) {
                 _graphics_family = queue_family;
@@ -354,32 +393,32 @@ pub fn main() !void {
             }
 
             if (_graphics_family != null and _present_family != null) {
-                var surface_formats_len: u32 = undefined;
-                _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pdevice, surface, &surface_formats_len, null);
-                if (surface_formats_len == 0) {
+                var surface_formats_count: u32 = undefined;
+                _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pdevice, surface, &surface_formats_count, null);
+                if (surface_formats_count == 0) {
                     break :pdevice;
                 }
 
                 var surface_formats: [surface_formats_cap]vk.SurfaceFormatKHR = undefined;
-                _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pdevice, surface, &surface_formats_len, &surface_formats);
+                _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pdevice, surface, &surface_formats_count, &surface_formats);
 
-                var present_modes_len: u32 = undefined;
-                _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pdevice, surface, &present_modes_len, null);
-                if (present_modes_len == 0) {
+                var present_modes_count: u32 = undefined;
+                _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pdevice, surface, &present_modes_count, null);
+                if (present_modes_count == 0) {
                     break :pdevice;
                 }
 
                 var present_modes: [present_modes_cap]vk.PresentModeKHR = undefined;
-                _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pdevice, surface, &present_modes_len, &present_modes);
+                _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pdevice, surface, &present_modes_count, &present_modes);
                 
-                var extensions_len: u32 = undefined;
-                _ = try vki.enumerateDeviceExtensionProperties(pdevice, null, &extensions_len, null);
+                var extensions_count: u32 = undefined;
+                _ = try vki.enumerateDeviceExtensionProperties(pdevice, null, &extensions_count, null);
 
                 var extensions: [extensions_cap]vk.ExtensionProperties = undefined;
-                _ = try vki.enumerateDeviceExtensionProperties(pdevice, null, &extensions_len, &extensions);
+                _ = try vki.enumerateDeviceExtensionProperties(pdevice, null, &extensions_count, &extensions);
 
                 required_ext: for (required_device_extensions) |required_ext| {
-                    for (0..extensions_len) |ext_i| {
+                    for (0..extensions_count) |ext_i| {
                         const ext = extensions[ext_i];
 
                         if (std.mem.eql(u8, std.mem.span(required_ext), std.mem.sliceTo(&ext.extension_name, 0))) {
@@ -389,8 +428,8 @@ pub fn main() !void {
                     break :pdevice;
                 }
 
-                surface_format = chooseSurfaceFormat(&surface_formats, surface_formats_len);
-                present_mode = choosePresentMode(&present_modes, present_modes_len);
+                surface_format = chooseSurfaceFormat(&surface_formats, surface_formats_count);
+                present_mode = choosePresentMode(&present_modes, present_modes_count);
 
                 break :outer;
             }
@@ -398,10 +437,12 @@ pub fn main() !void {
         }
 
         pdevice_i += 1;
-        if (pdevice_i == pdevices_len) {
+        if (pdevice_i == pdevices_count) {
             return error.SuitablePhysicalDeviceNotFound;
         }
     }
+
+    const pdevice_mem_props = vki.getPhysicalDeviceMemoryProperties(pdevice);
 
     const graphics_family = _graphics_family.?;
     const present_family = _present_family.?;
@@ -424,7 +465,9 @@ pub fn main() !void {
             .enabled_extension_count = required_device_extensions.len,
             .pp_enabled_extension_names = &required_device_extensions,
             .queue_create_info_count = 2,
-            .p_enabled_features = &pdevice_features,
+            .p_enabled_features = &vk.PhysicalDeviceFeatures{
+                .sampler_anisotropy = vk.TRUE,
+            },
         },
         null
     );
@@ -432,18 +475,86 @@ pub fn main() !void {
     defer vkd.destroyDevice(device, null);
 
     var surface_capabilities = try vki.getPhysicalDeviceSurfaceCapabilitiesKHR(pdevice, surface);
-    var swapchain_images_len: u32 = surface_capabilities.min_image_count + 1;
-    if (surface_capabilities.max_image_count != 0 and swapchain_images_len > surface_capabilities.max_image_count) {
-        swapchain_images_len = surface_capabilities.max_image_count;
+    var swapchain_images_count: u32 = surface_capabilities.min_image_count + 1;
+    if (surface_capabilities.max_image_count != 0 and swapchain_images_count > surface_capabilities.max_image_count) {
+        swapchain_images_count = surface_capabilities.max_image_count;
     }
     
     setExtent(&extent, &window, surface_capabilities);
+
+    const depth_image_info = vk.ImageCreateInfo {
+        .format = .d32_sfloat,
+        .image_type = .@"2d",
+        .tiling = .optimal,
+        .initial_layout = .undefined,
+        .usage = .{ 
+            .depth_stencil_attachment_bit = true,
+        },
+        .sharing_mode = .exclusive,
+        .samples = .{ .@"1_bit" = true },
+        .extent = .{
+            .width = extent.width,
+            .height = extent.height,
+            .depth = 1,
+        },
+        .mip_levels = 1,
+        .array_layers = 1,
+    };
+
+    const depth_image = try vkd.createImage(
+        device, 
+        &depth_image_info, 
+        null,
+    );
+    defer vkd.destroyImage(device, depth_image, null);
+
+    const depth_image_memory_requirements = vkd.getImageMemoryRequirements(device, depth_image);
+    const depth_image_memory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = depth_image_memory_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                depth_image_memory_requirements.memory_type_bits, 
+                vk.MemoryPropertyFlags {
+                    .device_local_bit = true 
+                },
+                pdevice_mem_props,
+            ),
+        }, 
+        null,
+    );
+    defer vkd.freeMemory(device, depth_image_memory, null);
+    _ = try vkd.bindImageMemory(device, depth_image, depth_image_memory, 0);
+
+    const depth_image_view = try vkd.createImageView(
+        device, 
+        &.{
+            .components = .{
+                .r = .identity,
+                .g = .identity,
+                .b = .identity,
+                .a = .identity,
+            },
+            .format = depth_image_info.format,
+            .view_type = .@"2d",
+            .image = depth_image,
+            .subresource_range = .{
+                .aspect_mask = .{ .depth_bit = true },
+                .base_array_layer = 0,
+                .layer_count = 1,
+                .base_mip_level = 0,
+                .level_count = 1,
+            }
+        }, 
+        null,
+    );
+    defer vkd.destroyImageView(device, depth_image_view, null);
 
     var swapchain = try vkd.createSwapchainKHR(
         device,
         &.{
             .surface = surface,
-            .min_image_count = swapchain_images_len,
+            .min_image_count = swapchain_images_count,
             .image_format = surface_format.format,
             .image_color_space = surface_format.color_space,
             .image_extent = extent,
@@ -462,10 +573,13 @@ pub fn main() !void {
     );
     defer vkd.destroySwapchainKHR(device, swapchain, null);
 
-    _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, null);
-    var swapchain_images: [swapchain_cap]vk.Image = undefined;
-    _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, &swapchain_images);
+    _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_count, null);
+    var swapchain_images: [present_frames_cap]vk.Image = undefined;
+    _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_count, &swapchain_images);
     
+    const last_render_index = swapchain_images_count - 2;
+    const render_frames_count = swapchain_images_count - 1;
+
     const color_attachment = vk.AttachmentDescription {
         .format = surface_format.format,
         .samples = .{ .@"1_bit" = true },
@@ -477,38 +591,62 @@ pub fn main() !void {
         .final_layout = .present_src_khr,
     };
 
+    const depth_attachment = vk.AttachmentDescription {
+        .format = depth_image_info.format,
+        .samples = .{ .@"1_bit" = true },
+        .load_op = .clear,
+        .store_op = .store,
+        .stencil_load_op = .dont_care,
+        .stencil_store_op = .dont_care,
+        .initial_layout = .undefined,
+        .final_layout = .depth_stencil_attachment_optimal,
+    };
+
     const color_attachment_ref = vk.AttachmentReference {
         .attachment = 0,
         .layout = .color_attachment_optimal,
+    };
+
+    const depth_attachment_ref = vk.AttachmentReference {
+        .attachment = 1,
+        .layout = .depth_stencil_attachment_optimal,
     };
 
     const subpass = vk.SubpassDescription {
         .pipeline_bind_point = .graphics,
         .color_attachment_count = 1,
         .p_color_attachments = @ptrCast(&color_attachment_ref),
+        .p_depth_stencil_attachment = &depth_attachment_ref,
     };
 
     const subpass_dependency = vk.SubpassDependency {
         .src_subpass = vk.SUBPASS_EXTERNAL,
         .dst_subpass = 0,
         .src_stage_mask = .{ 
-            .color_attachment_output_bit = true, 
+            .color_attachment_output_bit = true,
+            .early_fragment_tests_bit = true,
         },
         .src_access_mask = .{
         },
         .dst_stage_mask = .{
             .color_attachment_output_bit = true,
+            .early_fragment_tests_bit = true,
         },
         .dst_access_mask = .{
             .color_attachment_write_bit = true,
+            .depth_stencil_attachment_write_bit = true,
         },
     };
 
+    const render_pass_attachments = [_]vk.AttachmentDescription {
+        color_attachment,
+        depth_attachment,
+    };
     const render_pass = try vkd.createRenderPass(
         device,
         &.{
-            .attachment_count = 1,
-            .p_attachments = @ptrCast(&color_attachment),
+            .attachment_count = render_pass_attachments.len,
+            .p_attachments = &render_pass_attachments,
             .subpass_count = 1,
             .p_subpasses = @ptrCast(&subpass),
             .dependency_count = 1,
@@ -538,7 +676,7 @@ pub fn main() !void {
     );
     defer vkd.destroyShaderModule(device, frag, null);
 
-    const shader_stage_cis = [_]vk.PipelineShaderStageCreateInfo{
+    const shader_stage_infos = [_]vk.PipelineShaderStageCreateInfo{
         .{
             .stage = .{ .vertex_bit = true },
             .module = vert,
@@ -551,34 +689,47 @@ pub fn main() !void {
         },
     };
 
-    const descriptor_layout_bindings = [_]vk.DescriptorSetLayoutBinding {
-        vk.DescriptorSetLayoutBinding{
-            .binding = 0,     
-            .descriptor_type = .uniform_buffer_dynamic,
-            .descriptor_count = 1,
-            .stage_flags = .{ .vertex_bit = true },
-        },
+    const camera_descriptor_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,     
+        .descriptor_type = .uniform_buffer_dynamic,
+        .descriptor_count = 1,
+        .stage_flags = .{ .vertex_bit = true },
+    };
+    const image_sampler_descriptor_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 1,     
+        .descriptor_type = .combined_image_sampler,
+        .descriptor_count = 1,
+        .stage_flags = .{ .fragment_bit = true },
+    };
+    const descriptor_bindings = [_]vk.DescriptorSetLayoutBinding {
+        camera_descriptor_binding,
+        image_sampler_descriptor_binding,
     };
     const descriptor_set_layout = try vkd.createDescriptorSetLayout(
         device, 
         &.{
-            .binding_count = descriptor_layout_bindings.len,
-            .p_bindings = &descriptor_layout_bindings,
+            .binding_count = descriptor_bindings.len,
+            .p_bindings = &descriptor_bindings,
         }, 
         null,
     );
     defer vkd.destroyDescriptorSetLayout(device, descriptor_set_layout, null);
 
+    const descriptor_pool_sizes = [_]vk.DescriptorPoolSize {
+        vk.DescriptorPoolSize {
+            .type = .uniform_buffer_dynamic,
+            .descriptor_count = 1,
+        },
+        vk.DescriptorPoolSize {
+            .type = .combined_image_sampler,
+            .descriptor_count = 1,
+        },
+    };
     const descriptor_pool = try vkd.createDescriptorPool(
         device, 
         &.{
-            .pool_size_count = 1,
-            .p_pool_sizes = &[_]vk.DescriptorPoolSize {
-                vk.DescriptorPoolSize {
-                    .type = .uniform_buffer_dynamic,
-                    .descriptor_count = 1,
-                },
-            },
+            .pool_size_count = descriptor_pool_sizes.len,
+            .p_pool_sizes = &descriptor_pool_sizes,
             .max_sets = 1,
         }, 
         null,
@@ -588,34 +739,34 @@ pub fn main() !void {
     var descriptor_set: vk.DescriptorSet = undefined; 
     _ = try vkd.allocateDescriptorSets(
         device, 
-        @ptrCast(&vk.DescriptorSetAllocateInfo{
+        &.{
             .descriptor_pool = descriptor_pool,
             .descriptor_set_count = 1,
             .p_set_layouts = @ptrCast(&descriptor_set_layout),
-        }),
+        },
         @ptrCast(&descriptor_set),
     );
 
-    const vertex_input_state_ci = vk.PipelineVertexInputStateCreateInfo{
+    const vertex_input_state_info = vk.PipelineVertexInputStateCreateInfo{
         .vertex_binding_description_count = 1,
         .p_vertex_binding_descriptions = @ptrCast(&Vertex.binding_description),
         .vertex_attribute_description_count = Vertex.attribute_descriptions.len,
         .p_vertex_attribute_descriptions = &Vertex.attribute_descriptions,
     };
 
-    const input_assembly_state_ci = vk.PipelineInputAssemblyStateCreateInfo{
+    const input_assembly_state_info = vk.PipelineInputAssemblyStateCreateInfo{
         .topology = .triangle_list,
         .primitive_restart_enable = vk.FALSE,
     };
 
-    const viewport_state_ci = vk.PipelineViewportStateCreateInfo{
+    const viewport_state_info = vk.PipelineViewportStateCreateInfo{
         .viewport_count = 1,
         .p_viewports = null, // set in createCommandBuffers with cmdSetViewport
         .scissor_count = 1,
         .p_scissors = null, // set in createCommandBuffers with cmdSetScissor
     };
 
-    const rasterization_state_ci = vk.PipelineRasterizationStateCreateInfo{
+    const rasterization_state_info = vk.PipelineRasterizationStateCreateInfo{
         .depth_clamp_enable = vk.FALSE,
         .rasterizer_discard_enable = vk.FALSE,
         .polygon_mode = .fill,
@@ -628,7 +779,7 @@ pub fn main() !void {
         .line_width = 1.0,
     };
 
-    const multi_sample_state_ci = vk.PipelineMultisampleStateCreateInfo{
+    const multi_sample_state_info = vk.PipelineMultisampleStateCreateInfo{
         .rasterization_samples = .{ .@"1_bit" = true },
         .sample_shading_enable = vk.FALSE,
         .min_sample_shading = 1,
@@ -637,7 +788,7 @@ pub fn main() !void {
     };
 
     const blend_attachment_states = [_]vk.PipelineColorBlendAttachmentState{
-        // present framebuffer
+        // present framebuffer attachment
         vk.PipelineColorBlendAttachmentState{
             .blend_enable = vk.FALSE,
             .src_color_blend_factor = .one,
@@ -650,19 +801,31 @@ pub fn main() !void {
         },
     };
 
-    const blend_state_ci = vk.PipelineColorBlendStateCreateInfo{
+    const blend_state_info = vk.PipelineColorBlendStateCreateInfo{
         .logic_op_enable = vk.FALSE,
         .logic_op = .copy,
-        .attachment_count = 1,
+        .attachment_count = blend_attachment_states.len,
         .p_attachments = &blend_attachment_states,
         .blend_constants = [_]f32{ 0.0, 0.0, 0.0, 0.0, },
+    };
+
+    const depth_stencil_info = vk.PipelineDepthStencilStateCreateInfo {
+        .depth_test_enable = vk.TRUE,
+        .depth_write_enable = vk.TRUE,
+        .depth_compare_op = .greater,
+        .depth_bounds_test_enable = vk.FALSE,
+        .stencil_test_enable = vk.FALSE,
+        .front = undefined,
+        .back = undefined,
+        .min_depth_bounds = 0.0,
+        .max_depth_bounds = 1.0,
     };
 
     const dynamic_states = [_]vk.DynamicState{ 
         .viewport, 
         .scissor, 
     };
-    const dynamic_state_ci = vk.PipelineDynamicStateCreateInfo{
+    const dynamic_state_info = vk.PipelineDynamicStateCreateInfo{
         .flags = .{},
         .dynamic_state_count = dynamic_states.len,
         .p_dynamic_states = &dynamic_states,
@@ -687,17 +850,17 @@ pub fn main() !void {
         1,
         @ptrCast(&vk.GraphicsPipelineCreateInfo{
             .flags = .{},
-            .stage_count = shader_stage_cis.len,
-            .p_stages = &shader_stage_cis,
-            .p_vertex_input_state = &vertex_input_state_ci,
-            .p_input_assembly_state = &input_assembly_state_ci,
+            .stage_count = shader_stage_infos.len,
+            .p_stages = &shader_stage_infos,
+            .p_vertex_input_state = &vertex_input_state_info,
+            .p_input_assembly_state = &input_assembly_state_info,
             .p_tessellation_state = null,
-            .p_viewport_state = &viewport_state_ci,
-            .p_rasterization_state = &rasterization_state_ci,
-            .p_multisample_state = &multi_sample_state_ci,
-            .p_depth_stencil_state = null,
-            .p_color_blend_state = &blend_state_ci,
-            .p_dynamic_state = &dynamic_state_ci,
+            .p_viewport_state = &viewport_state_info,
+            .p_rasterization_state = &rasterization_state_info,
+            .p_multisample_state = &multi_sample_state_info,
+            .p_depth_stencil_state = &depth_stencil_info,
+            .p_color_blend_state = &blend_state_info,
+            .p_dynamic_state = &dynamic_state_info,
             .layout = pipeline_layout,
             .render_pass = render_pass,
             .subpass = 0,
@@ -721,28 +884,109 @@ pub fn main() !void {
     );
     defer vkd.destroyCommandPool(device, command_pool, null);
 
-    var command_buffers: [swapchain_cap]vk.CommandBuffer = undefined;
+    var command_buffers: [render_frames_cap]vk.CommandBuffer = undefined;
     _ = try vkd.allocateCommandBuffers(
         device,
-        @ptrCast(&vk.CommandBufferAllocateInfo{
+        &.{
             .command_pool = command_pool,
             .level = .primary,
-            .command_buffer_count = swapchain_images_len,
-        }), 
+            .command_buffer_count = swapchain_images_count,
+        }, 
         &command_buffers,
     );
 
     const graphics_queue = vkd.getDeviceQueue(device, graphics_family, 0);
     const present_queue = vkd.getDeviceQueue(device, present_family, 0);
 
-    var image_acquired_array: [swapchain_cap]vk.Semaphore = undefined;
-    var image_rendered_array: [swapchain_cap]vk.Semaphore = undefined;
-    var frame_ready_array: [swapchain_cap]vk.Fence = undefined;
+    var image_acquired_array: [render_frames_cap]vk.Semaphore = undefined;
+    var frame_begin_array: [render_frames_cap]vk.Fence = undefined;
 
-    var swapchain_image_views: [swapchain_cap]vk.ImageView = undefined;
-    var swapchain_framebuffers: [swapchain_cap]vk.Framebuffer = undefined;
+    var image_rendered_array: [present_frames_cap]vk.Semaphore = undefined;
+    var swapchain_image_views: [present_frames_cap]vk.ImageView = undefined;
+    var swapchain_framebuffers: [present_frames_cap]vk.Framebuffer = undefined;
 
-    for (0..swapchain_images_len) |i| {
+    {
+        var i: u32 = 0;
+        while (i != render_frames_count) {
+            swapchain_image_views[i] = try vkd.createImageView(
+                device,
+                &.{
+                    .image = swapchain_images[i],
+                    .components = .{
+                        .r = .identity,
+                        .g = .identity,
+                        .b = .identity,
+                        .a = .identity,
+                    },
+                    .subresource_range = .{
+                        .aspect_mask = .{ .color_bit = true, },
+                        .base_mip_level = 0,
+                        .level_count = 1,
+                        .base_array_layer = 0,
+                        .layer_count = 1,
+                    },
+                    .format = surface_format.format,
+                    .view_type = .@"2d",
+                }, 
+                null,
+            );
+    
+            const attachments = [_]vk.ImageView{
+                swapchain_image_views[i],
+                depth_image_view,
+            };
+    
+            swapchain_framebuffers[i] = try vkd.createFramebuffer(
+                device,
+                &.{
+                    .render_pass = render_pass,
+                    .attachment_count = attachments.len,
+                    .p_attachments = &attachments,
+                    .width = extent.width,
+                    .height = extent.height,
+                    .layers = 1,
+                }, 
+                null,
+            );
+    
+            image_acquired_array[i] = try vkd.createSemaphore(
+                device,
+                &.{
+                    .flags = .{},
+                },
+                null,
+            );
+    
+            image_rendered_array[i] = try vkd.createSemaphore(
+                device,
+                &.{
+                    .flags = .{},
+                },
+                null,
+            );
+    
+            frame_begin_array[i] = try vkd.createFence(
+                device, 
+                &.{
+                    .flags = .{
+                        .signaled_bit = true,
+                    },
+                }, 
+                null,
+            );
+    
+            i += 1;
+        }
+
+    
+        image_rendered_array[i] = try vkd.createSemaphore(
+            device,
+            &.{
+                .flags = .{},
+            },
+            null,
+        );
+
         swapchain_image_views[i] = try vkd.createImageView(
             device,
             &.{
@@ -768,6 +1012,7 @@ pub fn main() !void {
 
         const attachments = [_]vk.ImageView{
             swapchain_image_views[i],
+            depth_image_view,
         };
 
         swapchain_framebuffers[i] = try vkd.createFramebuffer(
@@ -782,43 +1027,22 @@ pub fn main() !void {
             }, 
             null,
         );
-
-        image_acquired_array[i] = try vkd.createSemaphore(
-            device,
-            &.{
-                .flags = .{},
-            },
-            null,
-        );
-
-        image_rendered_array[i] = try vkd.createSemaphore(
-            device,
-            &.{
-                .flags = .{},
-            },
-            null,
-        );
-
-        frame_ready_array[i] = try vkd.createFence(
-            device, 
-            &.{
-                .flags = .{
-                    .signaled_bit = true,
-                },
-            }, 
-            null,
-        );
     }
 
-    defer for (0..swapchain_images_len) |i| {
+    defer {
+        var i: u32 = 0;
+        while (i != render_frames_count) {
+            vkd.destroyFramebuffer(device, swapchain_framebuffers[i], null);
+            vkd.destroyImageView(device, swapchain_image_views[i], null);
+            vkd.destroyFence(device, frame_begin_array[i], null);
+            vkd.destroySemaphore(device, image_rendered_array[i], null);
+            vkd.destroySemaphore(device, image_acquired_array[i], null);
+            i += 1;
+        }
+        vkd.destroySemaphore(device, image_rendered_array[i], null);
         vkd.destroyFramebuffer(device, swapchain_framebuffers[i], null);
         vkd.destroyImageView(device, swapchain_image_views[i], null);
-        vkd.destroyFence(device, frame_ready_array[i], null);
-        vkd.destroySemaphore(device, image_acquired_array[i], null);
-        vkd.destroySemaphore(device, image_rendered_array[i], null);
-    };
-
-    const pdevice_mem_props = vki.getPhysicalDeviceMemoryProperties(pdevice);
+    }
 
     const vertex_buffer_info = vk.BufferCreateInfo {
         .size = @sizeOf(Vertex) * vertices.len,
@@ -895,8 +1119,110 @@ pub fn main() !void {
         0,
     );
 
+    const cwd = std.fs.cwd();
+    const image_file = try cwd.openFile("assets.hex", .{
+        .mode = .read_only
+    });
+    const allocator = std.heap.page_allocator;
+    const _image = try img.Image.load(image_file, allocator);
+    defer allocator.free(_image.ptr[0 .. _image.size]);
+
+    image_file.close();
+    
+    const image_info = vk.ImageCreateInfo{
+        .format = _image.format,
+        .image_type = .@"2d",
+        .tiling = .optimal,
+        .initial_layout = .undefined,
+        .usage = .{ 
+            .transfer_dst_bit = true,
+            .sampled_bit = true,
+        },
+        .sharing_mode = .exclusive,
+        .samples = .{ .@"1_bit" = true },
+        .extent = .{ 
+            .width = _image.width,
+            .height = _image.height,
+            .depth = 1,
+        },
+        .array_layers = 1,
+        .mip_levels = 1,
+    };
+    const image: vk.Image = try vkd.createImage (
+        device, 
+        &image_info, 
+        null,
+    );
+    defer vkd.destroyImage(device, image, null);
+
+    const image_memory_requirements = vkd.getImageMemoryRequirements(device, image);
+    const image_memory = try vkd.allocateMemory(
+        device, 
+        &.{
+            .allocation_size = image_memory_requirements.size,
+            .memory_type_index = findMemoryTypeIndex(
+                image_memory_requirements.memory_type_bits, 
+                vk.MemoryPropertyFlags {
+                    .device_local_bit = true 
+                },
+                pdevice_mem_props,
+            ),
+        }, 
+        null,
+    );
+    defer vkd.freeMemory(device, image_memory, null);
+    _ = try vkd.bindImageMemory(device, image, image_memory, 0);
+
+
+    const image_view = try vkd.createImageView(
+        device, 
+        &.{
+            .components = .{
+                .r = .identity,
+                .g = .identity,
+                .b = .identity,
+                .a = .identity,
+            },
+            .image = image,
+            .view_type = .@"2d",
+            .format = image_info.format,
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        },
+        null,
+    );
+    defer vkd.destroyImageView(device, image_view, null);
+
+    const sampler = try vkd.createSampler(
+        device, 
+        &.{
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
+            .anisotropy_enable = vk.TRUE,
+            .max_anisotropy = pdevice_props.limits.max_sampler_anisotropy,
+            .border_color = .int_opaque_black,
+            .unnormalized_coordinates = vk.FALSE,
+            .compare_enable = vk.FALSE,
+            .compare_op = .always,
+            .mipmap_mode = .linear,
+            .mip_lod_bias = 0.0,
+            .min_lod = 0.0,
+            .max_lod = 0.0,
+        },
+        null,
+    );
+    defer vkd.destroySampler(device, sampler, null);
+
     const staging_buffer_info = vk.BufferCreateInfo {
-        .size = vertex_buffer_info.size + index_buffer_info.size,
+        .size = vertex_buffer_info.size + _image.size + index_buffer_info.size,
         .usage = .{ 
             .transfer_src_bit = true,
         },
@@ -907,6 +1233,7 @@ pub fn main() !void {
         &staging_buffer_info,
         null,
     );
+
 
     const staging_memory_requirements = vkd.getBufferMemoryRequirements(device, staging_buffer);
     const staging_memmory = try vkd.allocateMemory(
@@ -932,9 +1259,9 @@ pub fn main() !void {
         0,
     );
 
-    const uniform_buffer_stride = @max(@sizeOf(CameraRender), pdevice_props.limits.min_uniform_buffer_offset_alignment);
+    const uniform_buffer_stride = @max(@sizeOf(Camera), pdevice_props.limits.min_uniform_buffer_offset_alignment);
     const uniform_buffer_info = vk.BufferCreateInfo {
-        .size = uniform_buffer_stride * swapchain_images_len,
+        .size = uniform_buffer_stride * render_frames_count,
         .usage = .{
             .uniform_buffer_bit = true
         },
@@ -966,7 +1293,7 @@ pub fn main() !void {
         0,
     );
 
-    const uniform_ptr: [*]u8 = @as([*]u8, @ptrCast(
+    const uniform_ptr: [*]u8 = @ptrCast(
         (try vkd.mapMemory(
             device, 
             uniform_memory, 
@@ -974,31 +1301,49 @@ pub fn main() !void {
             uniform_buffer_info.size, 
             .{},
         )).?
-    ));
+    );
     defer vkd.unmapMemory(device, uniform_memory);
 
-    vkd.updateDescriptorSets(
-        device, 
-        1, 
-        @ptrCast(&vk.WriteDescriptorSet{
-            .descriptor_type = .uniform_buffer_dynamic,
-            .descriptor_count = 1,
+    const descriptor_writes = [_]vk.WriteDescriptorSet {
+        vk.WriteDescriptorSet {
+            .descriptor_type = camera_descriptor_binding.descriptor_type,
+            .descriptor_count = camera_descriptor_binding.descriptor_count,
             .dst_set = descriptor_set,
-            .dst_binding = 0,
+            .dst_binding = camera_descriptor_binding.binding,
             .dst_array_element = 0,
-            .p_buffer_info = @as([*]const vk.DescriptorBufferInfo, @ptrCast(&vk.DescriptorBufferInfo{
+            .p_buffer_info = @ptrCast(&vk.DescriptorBufferInfo{
                 .buffer = uniform_buffer,
                 .offset = 0,
                 .range = uniform_buffer_stride,
-            })),
+            }),
             .p_image_info = undefined,
             .p_texel_buffer_view = undefined,
-        }), 
+        },
+        vk.WriteDescriptorSet {
+            .descriptor_type = image_sampler_descriptor_binding.descriptor_type,
+            .descriptor_count = image_sampler_descriptor_binding.descriptor_count,
+            .dst_set = descriptor_set,
+            .dst_binding = image_sampler_descriptor_binding.binding,
+            .dst_array_element = 0,
+            .p_buffer_info = undefined,
+            .p_image_info = @ptrCast(&vk.DescriptorImageInfo {
+                .image_layout = .shader_read_only_optimal,
+                .image_view = image_view,
+                .sampler = sampler,
+            }),
+            .p_texel_buffer_view = undefined,
+        },
+    };
+
+    vkd.updateDescriptorSets(
+        device, 
+        descriptor_writes.len, 
+        &descriptor_writes, 
         0, 
         null,
     );
 
-    const staging_ptr: []u8 = @as([*]u8, @ptrCast(
+    const staging_ptr: [*]u8 = @ptrCast(
         (try vkd.mapMemory(
             device, 
             staging_memmory, 
@@ -1006,9 +1351,12 @@ pub fn main() !void {
             staging_buffer_info.size, 
             .{},
         )).?
-    ))[0..staging_buffer_info.size];
-    @memcpy(staging_ptr[0..vertex_buffer_info.size], @as([*]const u8, @ptrCast(&vertices)));
-    @memcpy(staging_ptr[vertex_buffer_info.size..staging_buffer_info.size], @as([*]const u8, @ptrCast(&indices)));
+    );
+    const staging_image_offset = vertex_buffer_info.size;
+    const staging_index_offset = staging_image_offset + _image.size;
+    @memcpy(staging_ptr[0 .. staging_image_offset], @as([*]const u8, @ptrCast(&vertices)));
+    @memcpy(staging_ptr[staging_image_offset .. staging_index_offset], _image.ptr[0 .. _image.size]);
+    @memcpy(staging_ptr[staging_index_offset .. staging_buffer_info.size], @as([*]const u8, @ptrCast(&indices)));
     vkd.unmapMemory(device, staging_memmory);
 
     defer vkd.destroyBuffer(device, vertex_buffer, null);
@@ -1041,10 +1389,76 @@ pub fn main() !void {
             index_buffer, 
             1, 
             @ptrCast(&vk.BufferCopy{
-                .src_offset = vertex_buffer_info.size,
+                .src_offset = staging_index_offset,
                 .dst_offset = 0,
                 .size = index_buffer_info.size,
             }),
+        );
+
+
+        const layouts = [_]vk.ImageLayout {
+            .undefined,
+            .transfer_dst_optimal,
+            .shader_read_only_optimal,
+        };
+        const accesses = [_]vk.AccessFlags {
+            .{},
+            .{ .transfer_write_bit = true },
+            .{ .shader_read_bit = true },
+        };
+        const stages = [_]vk.PipelineStageFlags{
+            .{ .top_of_pipe_bit = true },
+            .{ .transfer_bit = true },
+            .{ .fragment_shader_bit = true },
+        };
+
+        var i: u8 = 0;
+        transitionImageLayout(
+            &vkd, 
+            image, 
+            command_buffer, 
+            layouts[i], 
+            layouts[i + 1], 
+            stages[i], 
+            stages[i + 1], 
+            accesses[i], 
+            accesses[i + 1]
+        );
+        i += 1;
+
+        vkd.cmdCopyBufferToImage(
+            command_buffer, 
+            staging_buffer, 
+            image, 
+            .transfer_dst_optimal, 
+            1, 
+            @ptrCast(&vk.BufferImageCopy{
+                .buffer_offset = staging_image_offset,
+                .buffer_row_length = 0,
+                .buffer_image_height = 0,
+                .image_subresource = .{
+                    .aspect_mask = .{ .color_bit = true },
+                    .mip_level = 0,
+                    .base_array_layer = 0,
+                    .layer_count = 1,
+                },
+                .image_offset = .{
+                    .x = 0, .y = 0, .z = 0,
+                },
+                .image_extent = image_info.extent,
+            })
+        );
+
+        transitionImageLayout(
+            &vkd, 
+            image, 
+            command_buffer, 
+            layouts[i], 
+            layouts[i + 1], 
+            stages[i], 
+            stages[i + 1], 
+            accesses[i], 
+            accesses[i + 1]
         );
 
         _ = try vkd.endCommandBuffer(command_buffer);
@@ -1063,100 +1477,100 @@ pub fn main() !void {
     }
 
     var width_to_height = @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
+    
+    var last_time: f32 = @floatCast(glfw.getTime());
 
-    // x corresponds to world z
-    // // y corresponds to world x
-    // var camera = Camera {
-    //     .front = undefined,
-    //     .right = undefined,
-    //     .position = math.Vector3 {
-    //         .x = 0.0,
-    //         .y = 0.0,
-    //         .z = 0.0,
-    //     },
-    //     .x_to_z = 0.0,
-    //     .xz_to_y = 0.0,
-    // };
+    var camera_z_to_y: f32 = 0.0;
+    var camera_z_to_x: f32 = 0.0;
+    var camera: Camera = .{
+        .position = .{
+            .x = 0.0,
+            .y = 0.0,
+            .z = 0.0,
+        },
+        .near_z = 0.1,
+        .cos_z_to_y = @cos(camera_z_to_y),
+        .sin_z_to_y = @sin(camera_z_to_y),
+        .cos_z_to_x = @cos(camera_z_to_x),
+        .sin_z_to_x = @sin(camera_z_to_x),
+        .x_scale = 2.0 / 3.0,
+        .y_scale = 2.0 / 3.0 * width_to_height,
+    };
 
-    var swapchain_image_index: u32 = 0;
-    var last_time = glfw.getTime();
+    var render_index: u32 = 0;
+
     while (true) {
         if (window.shouldClose() or window.getKey(.escape) == .press) {
             break;
         }
 
-        const image_acquired = image_acquired_array[swapchain_image_index];
-        const image_rendered = image_rendered_array[swapchain_image_index];
-        const frame_ready = frame_ready_array[swapchain_image_index];
-        const command_buffer = command_buffers[swapchain_image_index];
-        const swapchain_framebuffer = swapchain_framebuffers[swapchain_image_index];
-        const camera_render: *CameraRender = @ptrCast(@alignCast(uniform_ptr + uniform_buffer_stride * swapchain_image_index));
+        const image_acquired = image_acquired_array[render_index];
+        const frame_begin = frame_begin_array[render_index];
+
+        const command_buffer = command_buffers[render_index];
+        const uniform_camera_ptr: *Camera = @ptrCast(@alignCast(uniform_ptr + render_index * uniform_buffer_stride)); 
 
         _ = try vkd.waitForFences(
             device, 
             1, 
-            @ptrCast(&frame_ready), 
+            @ptrCast(&frame_begin), 
             vk.TRUE,
             std.math.maxInt(u64)
         );
 
-        const result_image_index = (try vkd.acquireNextImageKHR(
+        const present_index = (try vkd.acquireNextImageKHR(
             device,
             swapchain,
             std.math.maxInt(u64),
             image_acquired,
             .null_handle
         )).image_index;
-        if (result_image_index != swapchain_image_index) {
-            return error.AcquireNextImageMismatch;
-        }
 
-        camera_render.near_z = 0.1;
-        camera_render.view = math.Affine3.identity;
-        _ = camera_render.view.scale(.{
-            .x = 2.0 / 5.0,
-            .y = 2.0 / 5.0 * width_to_height,
-            .z = 1.0,
-        });
+        const swapchain_framebuffer = swapchain_framebuffers[present_index];
+        const image_rendered = image_rendered_array[present_index];
 
         
         _ = try vkd.resetFences(
             device, 
             1,
-            @ptrCast(&frame_ready)
+            @ptrCast(&frame_begin)
         );
 
         _ = try vkd.resetCommandBuffer(command_buffer, .{});
+
+        uniform_camera_ptr.* = camera;
 
         _ = try vkd.beginCommandBuffer(
             command_buffer, 
             &.{},
         );
 
-        const clear_colors = [_]vk.ClearValue {
+        const clear_values = [_]vk.ClearValue {
             .{
                 .color = .{
-                    .float_32 = [4]f32 {0, 0, 0, 0,},
+                    .float_32 = [4]f32 {0.0, 0.0, 0.0, 0.0,},
                 },
             },
-        };
-        const render_pass_bi = vk.RenderPassBeginInfo {
-            .render_pass = render_pass,
-            .framebuffer = swapchain_framebuffer,
-            .render_area = vk.Rect2D {
-                .extent = extent,
-                .offset = .{
-                    .x = 0,
-                    .y = 0,
-                },
+            .{
+                .depth_stencil = .{ .depth = 1.0, .stencil = 0 }
             },
-            .clear_value_count = clear_colors.len,
-            .p_clear_values = &clear_colors,
         };
-
+        
         vkd.cmdBeginRenderPass(
             command_buffer, 
-            &render_pass_bi, 
+            &vk.RenderPassBeginInfo {
+                .render_pass = render_pass,
+                .framebuffer = swapchain_framebuffer,
+                .render_area = vk.Rect2D {
+                    .extent = extent,
+                    .offset = .{
+                        .x = 0,
+                        .y = 0,
+                    },
+                },
+                .clear_value_count = clear_values.len,
+                .p_clear_values = &clear_values,
+            }, 
             .@"inline"
         );
 
@@ -1171,8 +1585,8 @@ pub fn main() !void {
             0, 
             1, 
             @ptrCast(&vk.Viewport{
-                .x = 0,
-                .y = 0,
+                .x = 0.0,
+                .y = 0.0,
                 .width = @floatFromInt(extent.width),
                 .height = @floatFromInt(extent.height),
                 .min_depth = 0.0,
@@ -1197,8 +1611,7 @@ pub fn main() !void {
             command_buffer, 
             0, 
             1, 
-            @ptrCast(&vertex_buffer)
-            , 
+            @ptrCast(&vertex_buffer), 
             &.{0},
         );
 
@@ -1217,7 +1630,7 @@ pub fn main() !void {
             1, 
             @ptrCast(&descriptor_set), 
             1,
-            @ptrCast(&(uniform_buffer_stride * swapchain_image_index)),
+            @ptrCast(&(uniform_buffer_stride * render_index)),
         );
 
         vkd.cmdDrawIndexed(
@@ -1247,7 +1660,7 @@ pub fn main() !void {
                 .signal_semaphore_count = 1,
                 .p_signal_semaphores = @ptrCast(&image_rendered),
             }),
-            frame_ready,
+            frame_begin,
         );
 
         const result = try vkd.queuePresentKHR(
@@ -1255,7 +1668,7 @@ pub fn main() !void {
             &.{
                 .swapchain_count = 1,
                 .p_swapchains = @ptrCast(&swapchain),
-                .p_image_indices = @ptrCast(&swapchain_image_index),
+                .p_image_indices = @ptrCast(&present_index),
                 .wait_semaphore_count = 1,
                 .p_wait_semaphores = @ptrCast(&image_rendered),
             },
@@ -1279,7 +1692,7 @@ pub fn main() !void {
                     device,
                     &.{
                         .surface = surface,
-                        .min_image_count = swapchain_images_len,
+                        .min_image_count = swapchain_images_count,
                         .image_format = surface_format.format,
                         .image_color_space = surface_format.color_space,
                         .image_extent = extent,
@@ -1297,10 +1710,10 @@ pub fn main() !void {
                     null,
                 );
                 vkd.destroySwapchainKHR(device, old_swapchain, null);
-                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, null);
-                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_len, &swapchain_images);
+                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_count, null);
+                _ = try vkd.getSwapchainImagesKHR(device, swapchain, &swapchain_images_count, &swapchain_images);
 
-                for (0..swapchain_images_len) |i| {
+                for (0..swapchain_images_count) |i| {
                     vkd.destroyFramebuffer(device, swapchain_framebuffers[i], null);
                     vkd.destroyImageView(device, swapchain_image_views[i], null);
 
@@ -1329,6 +1742,7 @@ pub fn main() !void {
 
                     const attachments = [_]vk.ImageView{
                         swapchain_image_views[i],
+                        depth_image_view
                     };
 
                     swapchain_framebuffers[i] = try vkd.createFramebuffer(
@@ -1344,26 +1758,87 @@ pub fn main() !void {
                         null,
                     );
                 }
-                swapchain_image_index = 0;
 
                 width_to_height = @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
+                camera.y_scale = camera.x_scale * width_to_height;
                 continue;
             },
             .success => {},
             else => return error.AcquireNextImageFailed,
         }
 
-        if (swapchain_image_index == swapchain_images_len - 1) {
-            swapchain_image_index = 0;
+        if (render_index == last_render_index) {
+            render_index = 0;
         } else {
-            swapchain_image_index += 1;
+            render_index += 1;
         }
 
-        const time = glfw.getTime();
-        // print("{}\n", .{@as(u16, @intFromFloat(1.0 / (time - last_time)))});
-        last_time = time;
+        {
+            const w = window.getKey(.w) == .press;
+            const s = window.getKey(.s) == .press;
+            const d = window.getKey(.d) == .press;
+            const a = window.getKey(.a) == .press;
 
-        glfw.pollEvents();
+            const up = window.getKey(.up) == .press;
+            const down = window.getKey(.down) == .press;
+            const right = window.getKey(.right) == .press;
+            const left = window.getKey(.left) == .press;
+
+            const left_shift = window.getKey(.left_shift) == .press;
+            const space = window.getKey(.space) == .press;
+
+            const forward_z = camera.cos_z_to_y * camera.cos_z_to_x;
+            const forward_x = camera.cos_z_to_y * camera.sin_z_to_x;
+
+            if (w and !s) {
+                camera.position.z += forward_z * target_dt; 
+                camera.position.x += forward_x * target_dt;
+            } else if (!w and s) {
+                camera.position.z -= forward_z * target_dt;
+                camera.position.x -= forward_x * target_dt; 
+            }
+
+            if (d and !a) {
+                camera.position.z -= camera.sin_z_to_x * target_dt;
+                camera.position.x += camera.cos_z_to_x * target_dt;
+            } else if (!d and a) {
+                camera.position.z += camera.sin_z_to_x * target_dt;
+                camera.position.x -= camera.cos_z_to_x * target_dt; 
+            }
+
+            if (left_shift and !space) {
+                camera.position.y += target_dt;
+            } else if (!left_shift and space) {
+                camera.position.y -= target_dt;
+            }
+
+            if (down and !up) {
+                camera_z_to_y += target_dt;
+            } else if (!down and up) {
+                camera_z_to_y -= target_dt;
+            }
+
+            if (right and !left) {
+                camera_z_to_x += target_dt;
+            } else if (!right and left) {
+                camera_z_to_x -= target_dt;
+            }
+
+            camera.cos_z_to_y = @cos(camera_z_to_y);
+            camera.sin_z_to_y = @sin(camera_z_to_y);
+            camera.cos_z_to_x = @cos(camera_z_to_x);
+            camera.sin_z_to_x = @sin(camera_z_to_x);
+        }
+
+        var time: f32 = undefined;
+        while (true) {
+            glfw.pollEvents();
+            time = @floatCast(glfw.getTime());
+            if (time - last_time > target_dt) {
+                break;
+            }
+        }
+        last_time = time;
     }
 
     _ = try vkd.deviceWaitIdle(device);
@@ -1414,6 +1889,51 @@ fn findMemoryTypeIndex(
         }
     }
     unreachable;
+}
+
+fn transitionImageLayout(
+    vkd: *const DeviceDispatch,
+    image: vk.Image,
+    command_buffer: vk.CommandBuffer,
+    old_layout: vk.ImageLayout,
+    new_layout: vk.ImageLayout,
+    src_stage: vk.PipelineStageFlags,
+    dst_stage: vk.PipelineStageFlags,
+    src_access: vk.AccessFlags,
+    dst_access: vk.AccessFlags,
+) void {
+
+    const barrier = vk.ImageMemoryBarrier {
+        .old_layout = old_layout,
+        .new_layout = new_layout,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        
+        .src_access_mask = src_access,
+        .dst_access_mask = dst_access,
+    };
+
+
+    vkd.cmdPipelineBarrier(
+        command_buffer, 
+        src_stage, 
+        dst_stage, 
+        .{}, 
+        0, 
+        null, 
+        0, 
+        null, 
+        1, 
+        @ptrCast(&barrier),
+    );
 }
 
 fn chooseSurfaceFormat(surface_formats: *const [surface_formats_cap]vk.SurfaceFormatKHR, len: u32) vk.SurfaceFormatKHR {

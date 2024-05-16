@@ -76,7 +76,7 @@ pub const Affine3 = extern struct {
         return self;
     }
 
-    pub fn rotate(self: *Self, norm: f32, b: Bivector3) Self {
+    pub fn rotate(self: *Self, norm: f32, b: Bivector3) *Self {
         const zx_yz = b.zx * b.yz;
         const yz_xy = b.yz * b.xy;
         const xy_zx = b.xy * b.zx;
@@ -109,7 +109,7 @@ pub const Affine3 = extern struct {
         const zy = xy_zx_one_sub_cos - yz_sin;
         const zz = (1.0 - xy_xy) * cos + xy_xy;
 
-        self = .{
+        const new_self = Self {
             .xx = self.xx * xx + self.xy * yx + self.xz * zx,
             .yx = self.yx * xx + self.yy * yx + self.yz * zx,
             .zx = self.zx * xx + self.zy * yx + self.zz * zx,
@@ -125,6 +125,7 @@ pub const Affine3 = extern struct {
             .zz = self.zx * xz + self.zy * yz + self.zz * zz,
             ._z = self._x * xz + self._y * yz + self._z * zz,
         };
+        self.* = new_self;
 
         return self;
     }
