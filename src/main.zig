@@ -81,43 +81,43 @@ const vertices = [_]Vertex {
     Vertex {
         .x = 0.5, .y = 0.5, .z = 0.5,
         .r = 0.5, .g = 0.5, .b = 0.0,
-        .u = 1.0, .v = 0.0,
+        .u = 1.0, .v = 1.0,
     },
     Vertex {
         .x = 0.5, .y = -0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 0.0,
-        .u = 1.0, .v = 1.0,
+        .u = 1.0, .v = 0.0,
     },
     Vertex {
         .x = -0.5, .y = -0.5, .z = 0.5,
         .r = 1.0, .g = 0.0, .b = 1.0,
-        .u = 0.0, .v = 1.0,
+        .u = 0.0, .v = 0.0,
     },
     Vertex {
         .x = -0.5, .y = 0.5, .z = 0.5,
         .r = 0.0, .g = 1.0, .b = 1.0,
-        .u = 0.0, .v = 0.0,
+        .u = 0.0, .v = 1.0,
     },
 
     Vertex {
         .x = 0.5, .y = 0.5, .z = 1.0,
         .r = 0.5, .g = 0.5, .b = 0.0,
-        .u = 1.0, .v = 0.0,
+        .u = 1.0, .v = 1.0,
     },
     Vertex {
         .x = 0.5, .y = -0.5, .z = 1.0,
         .r = 0.0, .g = 1.0, .b = 0.0,
-        .u = 1.0, .v = 1.0,
+        .u = 1.0, .v = 0.0,
     },
     Vertex {
         .x = -0.5, .y = -0.5, .z = 1.0,
         .r = 1.0, .g = 0.0, .b = 1.0,
-        .u = 0.0, .v = 1.0,
+        .u = 0.0, .v = 0.0,
     },
     Vertex {
         .x = -0.5, .y = 0.5, .z = 1.0,
         .r = 0.0, .g = 1.0, .b = 1.0,
-        .u = 0.0, .v = 0.0,
+        .u = 0.0, .v = 1.0,
     },
 };
 
@@ -624,9 +624,10 @@ pub fn main() !void {
         .dst_subpass = 0,
         .src_stage_mask = .{ 
             .color_attachment_output_bit = true,
-            .early_fragment_tests_bit = true,
+            .late_fragment_tests_bit = true,
         },
         .src_access_mask = .{
+            .depth_stencil_attachment_write_bit = true,
         },
         .dst_stage_mask = .{
             .color_attachment_output_bit = true,
@@ -1201,14 +1202,14 @@ pub fn main() !void {
     const sampler = try vkd.createSampler(
         device, 
         &.{
-            .mag_filter = .linear,
-            .min_filter = .linear,
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
             .address_mode_u = .repeat,
             .address_mode_v = .repeat,
             .address_mode_w = .repeat,
-            .anisotropy_enable = vk.TRUE,
+            .anisotropy_enable = vk.FALSE,
             .max_anisotropy = pdevice_props.limits.max_sampler_anisotropy,
-            .border_color = .int_opaque_black,
+            .border_color = .int_opaque_white,
             .unnormalized_coordinates = vk.FALSE,
             .compare_enable = vk.FALSE,
             .compare_op = .always,
@@ -1552,7 +1553,10 @@ pub fn main() !void {
                 },
             },
             .{
-                .depth_stencil = .{ .depth = 1.0, .stencil = 0 }
+                .depth_stencil = .{ 
+                    .depth = 0.0, 
+                    .stencil = 0,
+                },
             },
         };
         
@@ -1570,7 +1574,7 @@ pub fn main() !void {
                 },
                 .clear_value_count = clear_values.len,
                 .p_clear_values = &clear_values,
-            }, 
+            },
             .@"inline"
         );
 
